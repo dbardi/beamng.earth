@@ -185,6 +185,10 @@ You can help support development by reporting [issues](https://github.com/TecnaG
 - Uses your graphics card for some of the world server's work (colour matching of the photos, compressing the distant
   textures) when it can, so the server needs less of your CPU; without a usable one the CPU does it as before.
 - Offline play from the download cache (with a size cap and "clear cache").
+- **Performance** settings page: the world server's CPU cores (Auto: a quarter of your cores, at most half) and its
+  priority (Low: the game always comes first; Normal: the map loads faster on a busy CPU), from the next start.
+- Works behind a proxy: the app's downloads use the HTTP/HTTPS proxy set on your computer (HTTPS_PROXY, HTTP_PROXY,
+  NO_PROXY or the system's proxy setting; SOCKS proxies are not supported).
 - Updates: the mod tells you in game (and on its settings page, with a link) when a newer version is on GitHub;
   with the downloaded app (.exe / AppImage), **Update now** downloads it next to your copy, checks it against
   GitHub's checksum, and the next time you start BeamNG.Earth the new version starts (your old file and shortcut
@@ -240,7 +244,8 @@ as a GitHub **pre-release** named after the beta it follows, with a build number
 `1.7.2-beta.dev.37`). They have the newest fixes and features, but they are **built from the development branch
 and not thoroughly tested**: expect bugs, and things may change or break from one build to the next. The beta
 releases are the tested ones. A development build says so in game, and its update check offers the next development
-build (or the next beta, if that is newer); a beta only ever offers betas.
+build (or the next beta, if that is newer); a beta only ever offers betas. Only the newest three development builds
+are kept on the releases page.
 
 **Uninstalling:** delete the `beamng_earth` folder in `<BeamNG user folder>/current/mods/unpacked/` and the
 downloaded file (or this folder); the map cache is `.cache/beamng-earth` in your home folder (`~/.cache/beamng-earth` on Linux,

@@ -757,6 +757,7 @@ def _tile_parts(mark, frame, tile, zoom, g, buildings, left_hand, mph, gas_stati
     # roads.deck_pads)
     try:
         pad_parts = list(bridges.parts(cells, (box[0] - 40, box[1] - 40, box[2] + 40, box[3] + 40)))
+        pad_parts = roadsmod.shifted_parts(pad_parts, roadsmod.deck_shift_fn(frame, cells, urban, _s.widths, left_hand))
         pads_near = roadsmod.deck_pads([(f, sp, xy, z) for f, sp, xy, z, _lon in pad_parts], near_roads, box,
                                        bridges._ground, own=False)
     except Exception as ex:
@@ -775,7 +776,7 @@ def _tile_parts(mark, frame, tile, zoom, g, buildings, left_hand, mph, gas_stati
         guardrail_rows = guardrailsmod.forest_rows(frame, infra_fn, box, elev,
                                                    decks=guardrail_decks, parapets=parapets,
                                                    bridge_rails=roadmeshmod.BRIDGE_RAILS,
-                                                   supported_decks_out=low_parapet_decks)
+                                                   supported_decks_out=low_parapet_decks, roads=near_roads)
     except Exception as ex:
         log.warning("mapped guardrails: tile %s_%s: %s: %s", tx, ty, type(ex).__name__, ex)
         low_parapet_decks.clear()
