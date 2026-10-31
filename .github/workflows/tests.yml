@@ -1,0 +1,75 @@
+# The test suites, on every pull request, every push to main and dev, and "Run workflow" (release.yml only builds the
+# app and runs --help):
+# - python: the server tests (tools/run_tests.py) against the Rust module built from this commit's source, with LuaJIT
+#   so the tests that run the mod's own Lua (test_modsim, the Lua agreement checks) run too. BNGE_SKIP_DRIVE=1 leaves
+#   out the long drive test. Some tests download real map data (test_e2e, test_credits): they need the network.
+#   Two modules at a time: the timing tests (test_detail, test_colormatch, test_peerwork) failed with every core busy.
+# - rust: the kernels' own tests.
+# - lua: the mod's offline tests (mod/tests/test_*.lua, the engine stubbed); each exits 1 on a failure.
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main, dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: LuaJIT
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq luajit
+      - name: Rust kernels (server/earthfast.abi3.so from this commit's source)
+        run: python tools/build_native.py
+      - name: Python packages (fontTools for test_advance_sign_layout)
+        run: python -m pip install -r server/requirements.txt fonttools
+      - name: Server tests
+        env:
+          BNGE_SKIP_DRIVE: "1"
+        run: python tools/run_tests.py --par 2 --timeout 1800
+      - name: Test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs
+          path: build/test-logs/
+
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: cargo test
+        working-directory: native/earthfast
+        run: cargo test --release
+
+  lua:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: LuaJIT
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq luajit
+      - name: Lua tests
+        working-directory: mod/tests
+        run: |
+          failed=""
+          for f in test_*.lua; do
+            echo "== $f"
+            luajit "$f" || failed="$failed $f"
+          done
+          if [ -n "$failed" ]; then
+            echo "failed:$failed"
+            exit 1
+          fi
