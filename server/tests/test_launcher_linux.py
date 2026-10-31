@@ -1,4 +1,5 @@
 """launcher.py on Linux: the user folder and start path with a Flatpak Steam, the game-closed grace period."""
+import io
 import os
 import sys
 import tempfile
@@ -96,7 +97,16 @@ class FlatpakSteam(unittest.TestCase):
         touch(os.path.join(self.home, *FP, ".steam", "steam.pid"))
         with open(os.path.join(self.home, *FP, ".steam", "steam.pid"), "w") as f:
             f.write(str(os.getpid()))
-        self.assertTrue(launcher.steam_running())
+        # this process stands in for the Steam client: its comm reads "steam", and the /proc scan finds no other
+        # (without the stand-in the test passed only on a machine with Steam running, through that scan)
+        comm, real_open = f"/proc/{os.getpid()}/comm", open
+
+        def fake_open(path, *args, **kwargs):
+            return io.StringIO("steam\n") if path == comm else real_open(path, *args, **kwargs)
+        with mock.patch("builtins.open", fake_open), mock.patch.object(launcher.os, "listdir", return_value=[]):
+            self.assertTrue(launcher.steam_running())
+        with mock.patch.object(launcher.os, "listdir", return_value=[]):
+            self.assertFalse(launcher.steam_running())
 
 
 class GameClosed(unittest.TestCase):
@@ -118,7 +128,8 @@ class GameClosed(unittest.TestCase):
 @unittest.skipIf(os.name == "nt", "Linux: ensure_ca_certs leaves Windows alone")
 class CaCerts(unittest.TestCase):
     """The packaged app's OpenSSL looks in /usr/lib/ssl (Ubuntu's): elsewhere SSL_CERT_FILE points at a bundle."""
-    NONE = mock.Mock(cafile="/usr/lib/ssl/cert.pem", capath="/nonexistent/certs")
+    # (OpenSSL's default paths missing, as outside Debian / Ubuntu: /usr/lib/ssl/cert.pem exists on Ubuntu itself)
+    NONE = mock.Mock(cafile="/nonexistent/cert.pem", capath="/nonexistent/certs")
 
     def run_it(self, bundles, env=None):
         with mock.patch.dict(os.environ, env or {}, clear=False), \
