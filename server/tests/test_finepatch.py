@@ -33,8 +33,9 @@ class FineCellsTest(unittest.TestCase):
         self.assertEqual(sorted(zip(*np.nonzero(h))), [(j, i) for j in range(1, 4) for i in range(1, 4)])
 
     def test_gaps_closed_and_rim(self):
-        """A lone terrain cell inside a patch is fine too (closed); the rim: the cells west / south / south-west of
-        the patch, whose corners are its holes."""
+        """A lone terrain cell inside a patch is fine too (closed); the rim: the cells whose layer blend can read the
+        patch's holes (each fine cell's south-west sample), the terrain shader's warp of half a sample with it: one
+        cell north / east of the patch, two west / south."""
         u = np.zeros((14, 14))
         raw = u.copy()
         u[6, 5] = u[6, 7] = 4.0                    # two sharp spots, one cell apart
@@ -45,26 +46,34 @@ class FineCellsTest(unittest.TestCase):
         for j, i in zip(*np.nonzero(c)):           # every cell with one of its holes for a corner is covered
             self.assertTrue(cov[j - 1, i] and cov[j, i - 1] and cov[j - 1, i - 1])
         J, I = np.nonzero(c)
-        self.assertFalse(rim[J.max() + 1:].any() or rim[:, I.max() + 1:].any(), "none north or east of it")
+        self.assertFalse(rim[J.max() + 2:].any() or rim[:, I.max() + 2:].any(), "none past a cell north or east")
+        self.assertFalse(rim[:J.min() - 2].any() or rim[:, :I.min() - 2].any(), "none past two cells west or south")
+        self.assertTrue(rim[J.min() - 2, I.min()] and rim[J.min(), I.min() - 2] and rim[J.max() + 1, I.max()],
+                        "the warp's reach covered")
         self.assertFalse((rim.astype(bool) & c.astype(bool)).any())
 
-    def test_mesh_rim_on_the_terrain_edge(self):
-        """A fine cell beside a terrain-drawn one: its shared side is linear between the two samples (no gap), its
-        inside the fine heights."""
-        u = np.array([[0.0, 0.0, 0.0], [2.0, 2.0, 2.0]])          # 2 rows of samples, 2 cells
-        mask = np.array([[1, 0]], np.uint8)
-        cells = np.array([[0, 0]], np.int64)
-        k = 4
-        pts = np.asarray(fast._ef.fine_points(0.0, 0.0, 2.0, k, cells))
-        z = np.full((1, (k + 1) ** 2), 5.0)                        # the fine heights: all 5
-        P, T = (np.asarray(a) for a in fast._ef.fine_mesh(0.0, 0.0, 2.0, k, cells, z, u, mask, np.zeros(1, np.uint8),
-                                                           0.04))
-        self.assertEqual(len(T), 2 * k * k)
-        east = P[np.isclose(P[:, 0], 2.0)]
-        self.assertTrue(np.allclose(east[:, 2], east[:, 1]), "the east side: the terrain's edge (z = y here)")
-        inner = P[(P[:, 0] > 0.1) & (P[:, 0] < 1.9) & (P[:, 1] > 0.1) & (P[:, 1] < 1.9)]
-        self.assertTrue(np.allclose(inner[:, 2], 5.0))
-        self.assertTrue(np.allclose(pts, P[:, :2]))
+    def test_rim_cover_over_the_terrain_either_split(self):
+        """A rim cell's cover (fine_rim_mesh): its corners the terrain's samples lift up, its sides straight between
+        them (the fine mesh's outline alike), and nowhere under the terrain plus lift however the terrain splits the
+        cell (south-west to north-east or the other diagonal: the white half squares)."""
+        u = np.array([[0.0, 3.0], [-1.0, 0.5]])                    # one cell, its diagonals' middles 0.25 and 1.0
+        P, T = (np.asarray(a) for a in fast._ef.fine_rim_mesh(0.0, 0.0, 2.0, np.array([[0, 0]], np.int64), u, 0.01))
+        self.assertEqual(T.shape, (4, 3))
+        corner = {(0.0, 0.0): 0.0, (2.0, 0.0): 3.0, (0.0, 2.0): -1.0, (2.0, 2.0): 0.5}
+        for x, y, z in P:
+            if (x, y) in corner:
+                self.assertAlmostEqual(z, corner[(x, y)] + 0.01)
+        rng = np.random.default_rng(3)
+        for t in T:
+            a, b, c = P[t]
+            self.assertGreater((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]), 0.0, "up")
+            for w in rng.dirichlet([1, 1, 1], 20):
+                x, y, z = w @ P[t]
+                fx, fy = x / 2.0, y / 2.0
+                swne = (fx * 3.0 + fy * (0.5 - 3.0)) if fx >= fy else (fy * -1.0 + fx * (0.5 + 1.0))
+                nwse = ((1 - fx - fy) * 0.0 + fx * 3.0 + fy * -1.0) if fx + fy <= 1 else \
+                    ((1 - fy) * 3.0 + (1 - fx) * -1.0 + (fx + fy - 1) * 0.5)
+                self.assertGreaterEqual(z, max(swne, nwse) + 0.01 - 1e-9)
 
 
 class BlockFineTest(unittest.TestCase):

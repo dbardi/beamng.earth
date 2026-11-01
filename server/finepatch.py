@@ -10,7 +10,7 @@ The block's own process makes both from the same heights (its .ter's holes and t
 listed in its info `fine`), and the mod makes the pieces in the frame it swaps the .ter in: a hole never shows
 without its fill. The cells (earthfast.fine_cells): corners SHARP_DZ_M or more apart where the grading moved the
 ground GRADED_DZ_M (natural cliffs stay the terrain's), grown by GROW cells. Their rim is the terrain's own edge
-(earthfast.fine_mesh). Pieces of PIECE_M square (each its own small collision mesh: Windows rebuilds one big one in
+(earthfast.fine_tin, its rim covers earthfast.fine_rim_mesh). Pieces of PIECE_M square (each its own small collision mesh: Windows rebuilds one big one in
 seconds, collision-engine-facts). The prototype of 2026-10-25 (branch fine-ground) put the mesh in the road tiles.
 BNE_FINE=on turns it on (off by default while it is tried out).
 """
@@ -76,6 +76,19 @@ def _normals(P, T, u, x0, y0, sq, cells):
         n = np.c_[(u[cj, ci - 1] - u[cj, ci + 1]) / (2 * sq), (u[cj - 1, ci] - u[cj + 1, ci]) / (2 * sq), np.ones(len(k))]
         N[k] = n / np.linalg.norm(n, axis=1)[:, None]
     return N
+
+
+def _cell_layers(layers, J, I, n, fallback):
+    """Each cell's surface layer (cells J, I of a block's per-sample layers [j, i]): the one most of its four corner
+    samples have (the south-west one's on a tie). The terrain blends its samples' layers across the cell; a cell drawn
+    with its south-west sample's alone made one lighter sample a sharp pale square (the user, 2026-11-01)."""
+    ny, nx = layers.shape
+    c = np.stack([layers[J, I], layers[J, np.minimum(I + 1, nx - 1)], layers[np.minimum(J + 1, ny - 1), I],
+                  layers[np.minimum(J + 1, ny - 1), np.minimum(I + 1, nx - 1)]])
+    c = np.where((c < 0) | (c >= n), fallback, c)                   # (a tunnel's hole: 255)
+    votes = (c[:, None, :] == c[None, :, :]).sum(1)                 # (each corner: how many share its layer)
+    best = np.argmax(votes, 0)                                      # (the first of the most: the south-west first)
+    return c[best, np.arange(c.shape[1])]
 
 
 def material_name(bank_, layer):
@@ -146,14 +159,15 @@ def block_fine(frame, gen, raw, keep, cx, cy, size, out_dir, stem, aid, layers=N
     P, T, tcell, tpiece = fast._ef.fine_tin(x0, y0, sq, ji, heights(ji, TIN_K), ud, cells8, per, TIN_TOL_M,
                                             TIN_MAX_TRIS)
     P, T, tcell, tpiece = np.asarray(P), np.asarray(T), np.asarray(tcell), np.asarray(tpiece)
-    # (the rim cells: the grid mesh, drawn only, RIM_LIFT_M over the terrain's own pale squares)
+    # (RIM_LIFT_M over the terrain as the rim round it: their seam level, neither on the pale squares the rim covers)
+    P = P + [0.0, 0.0, RIM_LIFT_M]
+    # (the rim cells: covers drawn only, RIM_LIFT_M over the terrain's own pale squares, however it splits them)
     if len(RJ):
         rji = np.ascontiguousarray(np.c_[RJ, RI], np.int64)
-        RP, RT = fast._ef.fine_mesh(x0, y0, sq, K, rji, heights(rji, K), ud, cells8,
-                                    np.ones(len(RJ), np.uint8), RIM_LIFT_M)
+        fast.require(130, "fine_rim_mesh")
+        RP, RT = fast._ef.fine_rim_mesh(x0, y0, sq, rji, ud, RIM_LIFT_M)
         RP, RT = np.asarray(RP), np.asarray(RT)
-        tpc = 2 * K * K
-        rcell = nfine + np.repeat(np.arange(len(RJ)), tpc)
+        rcell = nfine + np.repeat(np.arange(len(RJ)), 4)          # (fine_rim_mesh: 4 triangles a cell)
         rpiece = (RJ // per)[rcell - nfine] * 100000 + (RI // per)[rcell - nfine] + 10 ** 10
         T = np.r_[T, RT + len(P)]
         P = np.r_[P, RP]
@@ -163,9 +177,7 @@ def block_fine(frame, gen, raw, keep, cx, cy, size, out_dir, stem, aid, layers=N
     extent = size * sq                                  # (the block's photo covers it from its south-west corner)
     import surface as surfacemod
     if layers is not None:
-        lay = np.asarray(layers, np.int64)[J, I]
-        bad = (lay < 0) | (lay >= len(surfacemod.MATERIALS))        # (a tunnel's hole: 255)
-        lay[bad] = surfacemod.DIRT
+        lay = _cell_layers(np.asarray(layers, np.int64), J, I, len(surfacemod.MATERIALS), surfacemod.DIRT)
     else:
         lay = np.full(len(J), surfacemod.DIRT, np.int64)
     used = sorted(set(int(v) for v in np.unique(lay)))
@@ -192,7 +204,9 @@ def block_fine(frame, gen, raw, keep, cx, cy, size, out_dir, stem, aid, layers=N
         uv2 = np.c_[sx * sq / DETAIL_M, 1.0 - sy * sq / DETAIL_M]
         tris = inv.reshape(-1, 3)
         name = f"{stem}_{pi}_{pj}{'r' if rimp else ''}.cdae"
-        cdae.write(os.path.join(out_dir, name), pos, tris, uvs=uv, uvs2=uv2, material=mats,
+        # (tangents along the detail's coordinates: its normal map's relief lit as the terrain's; along the photo's,
+        # whose v runs the other way, it was lit from the wrong side)
+        cdae.write(os.path.join(out_dir, name), pos, tris, uvs=uv, uvs2=uv2, tangent_uvs=uv2, material=mats,
                    normals=_normals(P[vi], tris, ud, x0, y0, sq, cells8), tri_materials=tri_layer[ti], object_name="fine")
         parts.append({"shape": name, "pos": [round(ox, 3), round(oy, 3), 0.0]} | ({"collide": False} if rimp else {}))
     return holes, {"materials": [[material_name(b, k), surfacemod.MATERIALS[k][0]] for k in used]

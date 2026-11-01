@@ -85,8 +85,10 @@ pub fn fine_holes<'py>(py: Python<'py>, cells: PyReadonlyArray2<'py, u8>) -> Bou
     numpy::ndarray::Array2::from_shape_vec((ny, nx), out).unwrap().into_pyarray(py)
 }
 
-/// The rim of the fine cells (ny - 1, nx - 1): the cells the terrain still draws with a hole for a corner (fine_holes:
-/// their east, north or north-east neighbour is fine), pale there. The mesh covers them too, a little over the terrain.
+/// The rim of the fine cells (ny - 1, nx - 1): the cells the terrain still draws that can read a hole sample (fine_holes:
+/// each fine cell's south-west one) in their layer blend, pale there: a hole corner of their own, or one more cell out,
+/// as the terrain shader warps its layer lookups by up to half a sample (calcLayerWarp: pale tips past the first ring,
+/// the user, 2026-11-01). The mesh covers them too, a little over the terrain.
 #[pyfunction]
 pub fn fine_rim<'py>(py: Python<'py>, cells: PyReadonlyArray2<'py, u8>) -> Bound<'py, PyArray2<u8>> {
     let c = cells.as_array();
@@ -95,7 +97,13 @@ pub fn fine_rim<'py>(py: Python<'py>, cells: PyReadonlyArray2<'py, u8>) -> Bound
     let mut out = vec![0u8; cy * cx];
     for j in 0..cy {
         for i in 0..cx {
-            if c[[j, i]] == 0 && (f(j, i + 1) || f(j + 1, i) || f(j + 1, i + 1)) {
+            if c[[j, i]] != 0 {
+                continue;
+            }
+            // (its blend reads samples j - 1 ..= j + 2, i - 1 ..= i + 2 with the warp; a fine cell's hole is its own
+            // south-west sample)
+            let hit = (j.saturating_sub(1)..=j + 2).any(|a| (i.saturating_sub(1)..=i + 2).any(|b| f(a, b)));
+            if hit {
                 out[j * cx + i] = 1;
             }
         }
@@ -122,87 +130,6 @@ pub fn fine_points<'py>(py: Python<'py>, x0: f64, y0: f64, square: f64, k: i64, 
         }
     }
     numpy::ndarray::Array2::from_shape_vec((c.nrows() * m, 2), out).unwrap().into_pyarray(py)
-}
-
-/// The fine mesh of cells (n, 2) [j, i] (fine_points' layout): z (n, (k + 1)²) its heights there, u (ny, nx) the
-/// lattice's (the terrain's), mask (ny - 1, nx - 1) the fine cells and rim (n) the cells that are their rim (fine_rim). A side the terrain draws (its neighbour not fine)
-/// takes the terrain's own edge, linear between its two samples, and every cell's corners the samples: no gap at the
-/// holes' rim. Returns (positions (n * (k + 1)², 3), triangles (n * 2k², 3) counter-clockwise from above).
-#[pyfunction]
-#[allow(clippy::too_many_arguments)]
-pub fn fine_mesh<'py>(py: Python<'py>, x0: f64, y0: f64, square: f64, k: i64, cells: PyReadonlyArray2<'py, i64>,
-                      z: PyReadonlyArray2<'py, f64>, u: PyReadonlyArray2<'py, f64>, mask: PyReadonlyArray2<'py, u8>,
-                      rim: numpy::PyReadonlyArray1<'py, u8>, lift: f64)
-                      -> (Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<i64>>) {
-    let (c, z, u, mask, rim) = (cells.as_array(), z.as_array(), u.as_array(), mask.as_array(), rim.as_array());
-    let k = k.max(1) as usize;
-    let w = k + 1;
-    let n = c.nrows();
-    let (cy, cx) = (mask.nrows() as i64, mask.ncols() as i64);
-    let fine = |j: i64, i: i64| j >= 0 && j < cy && i >= 0 && i < cx && mask[[j as usize, i as usize]] != 0;
-    let mut pos = Vec::with_capacity(n * w * w * 3);
-    let mut tri = Vec::with_capacity(n * 2 * k * k * 3);
-    for r in 0..n {
-        let (j, i) = (c[[r, 0]], c[[r, 1]]);
-        let (ju, iu) = (j as usize, i as usize);
-        let (u00, u10, u01, u11) = (u[[ju, iu]], u[[ju, iu + 1]], u[[ju + 1, iu]], u[[ju + 1, iu + 1]]);
-        // (a rim cell (rim[r]): every side the terrain's edge, its inside over the terrain's (bilinear) by lift: the
-        // terrain still draws it, pale, under the mesh)
-        let is_rim = rim[r] != 0;
-        let (rs, rn, rw, re) = if is_rim { (true, true, true, true) }
-                               else { (!fine(j - 1, i), !fine(j + 1, i), !fine(j, i - 1), !fine(j, i + 1)) };
-        for a in 0..w {
-            for b in 0..w {
-                let (tx, ty) = (b as f64 / k as f64, a as f64 / k as f64);
-                let mut h = z[[r, a * w + b]];
-                if is_rim {
-                    let bil = (u00 * (1.0 - tx) + u10 * tx) * (1.0 - ty) + (u01 * (1.0 - tx) + u11 * tx) * ty;
-                    h = h.max(bil) + lift;
-                }
-                if a == 0 && rs {
-                    h = u00 * (1.0 - tx) + u10 * tx;
-                } else if a == k && rn {
-                    h = u01 * (1.0 - tx) + u11 * tx;
-                }
-                if b == 0 && rw {
-                    h = u00 * (1.0 - ty) + u01 * ty;
-                } else if b == k && re {
-                    h = u10 * (1.0 - ty) + u11 * ty;
-                }
-                h = match (a, b) {
-                    (0, 0) => u00,
-                    (0, bb) if bb == k => u10,
-                    (aa, 0) if aa == k => u01,
-                    (aa, bb) if aa == k && bb == k => u11,
-                    _ => h,
-                };
-                if is_rim {
-                    // (a rim cell lies over the terrain's own (pale) square by lift all over, but on a side it shares
-                    // with a fine cell, which meets it there at the terrain's edge: at 1 m steps a lifted middle alone
-                    // left most of the cell level with the terrain and the pale square showed through, 2026-11-01)
-                    let on_fine = (a == 0 && fine(j - 1, i)) || (a == k && fine(j + 1, i))
-                        || (b == 0 && fine(j, i - 1)) || (b == k && fine(j, i + 1));
-                    let inside = a > 0 && a < k && b > 0 && b < k;
-                    if !on_fine && !inside {
-                        h += lift;
-                    }
-                }
-                pos.push(x0 + (i as f64 + tx) * square);
-                pos.push(y0 + (j as f64 + ty) * square);
-                pos.push(h);
-            }
-        }
-        let base = (r * w * w) as i64;
-        for a in 0..k {
-            for b in 0..k {
-                let sw = base + (a * w + b) as i64;
-                let (se, ne, nw) = (sw + 1, sw + w as i64 + 1, sw + w as i64);
-                tri.extend_from_slice(&[sw, se, ne, sw, ne, nw]);
-            }
-        }
-    }
-    (numpy::ndarray::Array2::from_shape_vec((n * w * w, 3), pos).unwrap().into_pyarray(py),
-     numpy::ndarray::Array2::from_shape_vec((n * 2 * k * k, 3), tri).unwrap().into_pyarray(py))
 }
 
 /// fine_tin's insertion order: the largest error first (total order over f64).
@@ -625,4 +552,36 @@ pub fn fine_tin<'py>(py: Python<'py>, x0: f64, y0: f64, square: f64, cells: PyRe
     (numpy::ndarray::Array2::from_shape_vec((nv, 3), pos).unwrap().into_pyarray(py),
      numpy::ndarray::Array2::from_shape_vec((nt, 3), tri).unwrap().into_pyarray(py),
      tcell.into_pyarray(py), tpiece.into_pyarray(py))
+}
+
+/// The rim cells' covers (rim cells (n, 2) [j, i], fine_rim; u (ny, nx) the terrain's stored heights): each cell four
+/// triangles round its centre, its corners the samples and its centre the higher of its diagonals' middles, all lift up.
+/// Each triangle lies within one triangle of the cell however the terrain splits it (south-west to north-east or
+/// north-west to south-east) and the cover is the corners' heights' upper hull: over the terrain drawn either way (a
+/// cover on the one split stood under the other: white half squares, the user's report 2026-11-01). Its sides are the
+/// terrain's straight edges, lift up, as the fine mesh's outline. Returns (positions (5n, 3), triangles (4n, 3)).
+#[pyfunction]
+pub fn fine_rim_mesh<'py>(py: Python<'py>, x0: f64, y0: f64, square: f64, cells: PyReadonlyArray2<'py, i64>,
+                          u: PyReadonlyArray2<'py, f64>, lift: f64)
+                          -> (Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<i64>>) {
+    let (c, u) = (cells.as_array(), u.as_array());
+    let n = c.nrows();
+    let mut pos = Vec::with_capacity(n * 15);
+    let mut tri = Vec::with_capacity(n * 12);
+    for r in 0..n {
+        let (j, i) = (c[[r, 0]], c[[r, 1]]);
+        let (ju, iu) = (j as usize, i as usize);
+        let (a, b, cc, d) = (u[[ju, iu]], u[[ju, iu + 1]], u[[ju + 1, iu]], u[[ju + 1, iu + 1]]);   // sw se nw ne
+        let (x, y) = (x0 + i as f64 * square, y0 + j as f64 * square);
+        let mid = ((a + d) * 0.5).max((b + cc) * 0.5);
+        for (px, py, h) in [(x, y, a), (x + square, y, b), (x + square, y + square, d), (x, y + square, cc),
+                            (x + 0.5 * square, y + 0.5 * square, mid)] {
+            pos.extend_from_slice(&[px, py, h + lift]);
+        }
+        let s = (r * 5) as i64;
+        // (sw se ne nw: 0 1 2 3, centre 4; counter-clockwise from above)
+        tri.extend_from_slice(&[s, s + 1, s + 4, s + 1, s + 2, s + 4, s + 2, s + 3, s + 4, s + 3, s, s + 4]);
+    }
+    (numpy::ndarray::Array2::from_shape_vec((n * 5, 3), pos).unwrap().into_pyarray(py),
+     numpy::ndarray::Array2::from_shape_vec((n * 4, 3), tri).unwrap().into_pyarray(py))
 }
