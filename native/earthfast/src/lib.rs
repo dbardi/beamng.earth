@@ -5313,6 +5313,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(finepatch::fine_rim, m)?)?;
     m.add_function(wrap_pyfunction!(finepatch::fine_points, m)?)?;
     m.add_function(wrap_pyfunction!(finepatch::fine_mesh, m)?)?;
+    m.add_function(wrap_pyfunction!(finepatch::fine_tin, m)?)?;
     m.add_function(wrap_pyfunction!(tapers::lane_flow, m)?)?;
     m.add_function(wrap_pyfunction!(tapers::lane_shifts, m)?)?;
     m.add_function(wrap_pyfunction!(decks::deck_gaps, m)?)?;
@@ -5453,6 +5454,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fartex::season_img, m)?)?;
     m.add_function(wrap_pyfunction!(fartex::dds_levels, m)?)?;
     m.add_function(wrap_pyfunction!(fartex::jpeg_rgb, m)?)?;
-    m.add("VERSION", 126)?;
+    m.add("VERSION", 127)?;
     Ok(())
 }

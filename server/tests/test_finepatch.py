@@ -102,6 +102,58 @@ class BlockFineTest(unittest.TestCase):
             self.assertIsNone(fine, "natural ground: nothing fine")
 
 
+class FineTinTest(unittest.TestCase):
+    """earthfast.fine_tin: the fine cells as an adaptive triangulation (the user, 2026-11-01: "the finer mesh should be
+    adaptive ... not be force to allign to a grid"): it covers them exactly once, its pieces meet without cracks, its
+    outline stays the terrain's edges, and a road's edge across the grid is drawn straight within its tolerance."""
+
+    def test_road_edge_across_the_grid(self):
+        n, sq = 40, 2.0
+
+        def f(x, y):        # a road on a 10 % grade, its side falling 1:1.5 over 3 m, its edge 30 degrees off the grid
+            d = x * np.sin(0.52) - y * np.cos(0.52) + 20.0
+            s = np.clip(d / 3.0, 0.0, 1.0)
+            return 0.1 * x - 4.5 * s * s * (3.0 - 2.0 * s)
+        ys, xs = np.mgrid[0:n + 1, 0:n + 1] * sq
+        u = f(xs, ys)
+        mask = np.ones((n, n), np.uint8)
+        mask[:, :2] = 0
+        mask[:2, :] = 0
+        J, I = np.nonzero(mask)
+        ji = np.ascontiguousarray(np.c_[J, I], np.int64)
+        k = finepatch.TIN_K
+        pts = np.asarray(fast._ef.fine_points(0.0, 0.0, sq, k, ji))
+        z = np.ascontiguousarray(f(pts[:, 0], pts[:, 1]).reshape(len(ji), (k + 1) ** 2))
+        P, T, tc, tp = (np.asarray(a) for a in fast._ef.fine_tin(0.0, 0.0, sq, ji, z, u, mask, 16, 0.02, 16384))
+        a, b, c = P[T[:, 0]], P[T[:, 1]], P[T[:, 2]]
+        area = 0.5 * ((b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0]))
+        self.assertGreater(float(area.min()), 0.0, "every triangle up")
+        self.assertAlmostEqual(float(area.sum()), float(mask.sum()) * sq * sq, places=6)
+        self.assertGreater(len(np.unique(tp)), 4, "in pieces")
+        self.assertLess(len(T), len(ji) * 2 * finepatch.K ** 2, "fewer triangles than the 1 m grid")
+        # every edge twice (by position, across the pieces too) but the outline's, which are the terrain's whole edges
+        key = lambda i: (round(float(P[i, 0]), 6), round(float(P[i, 1]), 6))  # noqa: E731
+        edges = {}
+        for t in T:
+            for m in range(3):
+                e = tuple(sorted((key(t[m]), key(t[(m + 1) % 3]))))
+                edges[e] = edges.get(e, 0) + 1
+        self.assertFalse([e for e, m in edges.items() if m > 2])
+        for (p0, p1), m in edges.items():
+            if m == 1:
+                self.assertTrue(p0[0] in (4.0, 80.0) and p1[0] == p0[0] or p0[1] in (4.0, 80.0) and p1[1] == p0[1])
+                self.assertAlmostEqual(abs(p1[0] - p0[0]) + abs(p1[1] - p0[1]), sq, msg="a terrain edge, unsplit")
+        # within a few cm of the ground away from the outline (which keeps the terrain's straight edges)
+        rng = np.random.default_rng(1)
+        err = []
+        for t in T:
+            q = rng.dirichlet([1, 1, 1], 4) @ P[t]
+            ok = (q[:, 0] > 8.0) & (q[:, 1] > 8.0) & (q[:, 0] < 76.0) & (q[:, 1] < 76.0)
+            err.extend(np.abs(q[ok, 2] - f(q[ok, 0], q[ok, 1])))
+        self.assertLess(float(np.percentile(err, 99)), 0.05)
+        self.assertLess(float(np.max(err)), 0.20)
+
+
 if __name__ == "__main__":
     unittest.main()
 

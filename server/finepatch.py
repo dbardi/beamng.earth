@@ -29,6 +29,9 @@ PIECE_M = 64.0              # m: a piece's square (at most 32 x 32 cells, 8192 t
 MAX_CELLS = 40000           # per block (a mountain's worth); more: the steepest kept
 EDGE_CELLS = 3              # cells at the block's edge left to the terrain (its edge holes, the next block's seam)
 RIM_LIFT_M = 0.04           # m the mesh lies over the terrain inside the rim cells (the terrain draws them, pale)
+TIN_K = 8                   # the fine cells' heights sampled every 1 / TIN_K cell (0.25 m) for fine_tin ...
+TIN_TOL_M = 0.02            # ... put in where the triangles are this far off them
+TIN_MAX_TRIS = 16384        # per piece (32 x 32 cells; the 1 m grid's were 8192)
 DETAIL_M = 2.0              # the second UV set's metres per unit (farfield.DETAIL_M: satmat.lua's ground grain)
 
 
@@ -99,18 +102,36 @@ def block_fine(frame, gen, raw, keep, cx, cy, size, out_dir, stem, aid, layers=N
     rim[:, :e - 1] = 0
     RJ, RI = np.nonzero(rim)
     nfine = len(J)
-    J, I = np.r_[J, RJ], np.r_[I, RI]
-    is_rim = np.r_[np.zeros(nfine, np.uint8), np.ones(len(RJ), np.uint8)]
     x0, y0, sq = float(xs[0]), float(ys[0]), heightmap.SQUARE
+    per = int(round(PIECE_M / sq))
+
+    def heights(ji, k):
+        pts = np.asarray(fast._ef.fine_points(x0, y0, sq, k, ji))
+        la, lo, _ = frame.enu_to_geodetic(pts[:, 0], pts[:, 1], np.zeros(len(pts)))
+        la, lo = np.asarray(la, np.float64), np.asarray(lo, np.float64)
+        z = np.asarray(frame.geodetic_to_enu(la, lo, np.asarray(gen(la, lo), np.float64))[2], np.float64)
+        return np.ascontiguousarray(z.reshape(len(ji), (k + 1) ** 2))
+
+    # the fine cells: an adaptive triangulation of their ground (earthfast.fine_tin), not a grid
     ji = np.ascontiguousarray(np.c_[J, I], np.int64)
-    pts = np.asarray(fast._ef.fine_points(x0, y0, sq, K, ji))
-    la, lo, _ = frame.enu_to_geodetic(pts[:, 0], pts[:, 1], np.zeros(len(pts)))
-    la, lo = np.asarray(la, np.float64), np.asarray(lo, np.float64)
-    z = np.asarray(frame.geodetic_to_enu(la, lo, np.asarray(gen(la, lo), np.float64))[2], np.float64)
-    w = (K + 1) ** 2
-    P, T = fast._ef.fine_mesh(x0, y0, sq, K, ji, np.ascontiguousarray(z.reshape(len(J), w)), u, cells8, is_rim,
-                              RIM_LIFT_M)
-    P, T = np.asarray(P), np.asarray(T)
+    fast.require(127, "fine_tin")
+    P, T, tcell, tpiece = fast._ef.fine_tin(x0, y0, sq, ji, heights(ji, TIN_K), u, cells8, per, TIN_TOL_M,
+                                            TIN_MAX_TRIS)
+    P, T, tcell, tpiece = np.asarray(P), np.asarray(T), np.asarray(tcell), np.asarray(tpiece)
+    # (the rim cells: the grid mesh, drawn only, RIM_LIFT_M over the terrain's own pale squares)
+    if len(RJ):
+        rji = np.ascontiguousarray(np.c_[RJ, RI], np.int64)
+        RP, RT = fast._ef.fine_mesh(x0, y0, sq, K, rji, heights(rji, K), u, cells8,
+                                    np.ones(len(RJ), np.uint8), RIM_LIFT_M)
+        RP, RT = np.asarray(RP), np.asarray(RT)
+        tpc = 2 * K * K
+        rcell = nfine + np.repeat(np.arange(len(RJ)), tpc)
+        rpiece = (RJ // per)[rcell - nfine] * 100000 + (RI // per)[rcell - nfine] + 10 ** 10
+        T = np.r_[T, RT + len(P)]
+        P = np.r_[P, RP]
+        tcell = np.r_[tcell, rcell]
+        tpiece = np.r_[tpiece, rpiece]
+    J, I = np.r_[J, RJ], np.r_[I, RI]
     extent = size * sq                                  # (the block's photo covers it from its south-west corner)
     import surface as surfacemod
     if layers is not None:
@@ -122,20 +143,13 @@ def block_fine(frame, gen, raw, keep, cx, cy, size, out_dir, stem, aid, layers=N
     used = sorted(set(int(v) for v in np.unique(lay)))
     b = bank(cx, cy, size)
     mats = [material_name(b, k) for k in used]
-    tri_layer = np.repeat(np.searchsorted(used, lay), 2 * K * K)    # (each cell's triangles: fine_mesh's order)
-    # the pieces: cells by the PIECE_M square their south-west corner lies in (from the block's corner)
-    per = int(round(PIECE_M / sq))
-    # (the rim cells in pieces of their own, drawn only: the terrain under them collides, the mesh 4 cm over it made
-    # ridges across the lanes)
-    pk = (J // per) * 100000 + (I // per) + is_rim.astype(np.int64) * 10 ** 10
+    tri_layer = np.searchsorted(used, lay[tcell])
+    # the pieces: PIECE_M squares from the block's corner (fine_tin's), the rim cells in pieces of their own, drawn
+    # only (the terrain under them collides; the mesh 4 cm over it made ridges across the lanes)
     parts = []
-    tpc = 2 * K * K                                     # triangles per cell (fine_mesh's order: cell by cell)
-    for key in np.unique(pk):
-        sel = np.flatnonzero(pk == key)
-        vi = (sel[:, None] * w + np.arange(w)[None, :]).ravel()
-        ti = (sel[:, None] * tpc + np.arange(tpc)[None, :]).ravel()
-        remap = np.full(len(P), -1, np.int64)
-        remap[vi] = np.arange(len(vi))
+    for key in np.unique(tpiece):
+        ti = np.flatnonzero(tpiece == key)
+        vi, inv = np.unique(T[ti].ravel(), return_inverse=True)
         rimp = key >= 10 ** 10
         kk = int(key % 10 ** 10)
         pj, pi = kk // 100000, kk % 100000
@@ -144,7 +158,7 @@ def block_fine(frame, gen, raw, keep, cx, cy, size, out_dir, stem, aid, layers=N
         uv = np.c_[(P[vi, 0] - x0) / extent, (P[vi, 1] - y0) / extent]
         uv2 = pos[:, :2] / DETAIL_M                     # (world-locked: piece corners are on the 2 m lattice)
         name = f"{stem}_{pi}_{pj}{'r' if rimp else ''}.cdae"
-        cdae.write(os.path.join(out_dir, name), pos, remap[T[ti]], uvs=uv, uvs2=uv2, material=mats,
+        cdae.write(os.path.join(out_dir, name), pos, inv.reshape(-1, 3), uvs=uv, uvs2=uv2, material=mats,
                    tri_materials=tri_layer[ti], object_name="fine")
         parts.append({"shape": name, "pos": [round(ox, 3), round(oy, 3), 0.0]} | ({"collide": False} if rimp else {}))
     return holes, {"materials": [[material_name(b, k), surfacemod.MATERIALS[k][0]] for k in used], "bank": b,
