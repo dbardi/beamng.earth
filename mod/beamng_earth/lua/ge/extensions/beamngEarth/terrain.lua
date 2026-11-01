@@ -394,8 +394,11 @@ local function fineTexture(m, base, layer)
   local satmat = require('beamngEarth/satmat')
   local dds = fineDds(base, layer)
   if dds then
+    local layers = tostring(m:getField('activeLayers', 0))
     m:setField('version', 0, '1.5')
     satmat._setTexture(m, dds, false)
+    m:setField('baseColorMap', 1, dds)      -- (the macro layer's photo: fineMaterial)
+    if layers == '2' then m:setField('activeLayers', 0, '2') end     -- (_setTexture set one)
   elseif type(base) == 'string' and FS:fileExists(base) then
     m:setField('version', 0, '1')      -- (the PNG: the legacy material, which reads it as the terrain does)
     satmat._setTexture(m, base, false)
@@ -416,6 +419,7 @@ M.FINE_AO_BASE = TERRAIN_DIR .. 'bngEarth_base_ao.png'
 -- (a strength pair "near far" as the terrain shader takes it at FINE_LOOK_M from the camera with the layer's
 -- detailDistances "a b c d": near up to b, toward far by c, far from d: terrain.h's calculateStrenth)
 M.FINE_LOOK_M = 20
+M.FINE_MACRO = true
 local function nums(v)
   local o = {}
   for x in tostring(v or ''):gmatch('[%d%.%-]+') do o[#o + 1] = tonumber(x) end
@@ -452,28 +456,44 @@ local function fineMaterial(name, layer, base, rim)
       -- (detail sizes in samples: one repeat every size x square metres; UV1 is metres / 2)
       local size = math.max(tonumber(get('baseColorDetailTexSize')) or 1, 0.25) * M.square
       local sc = string.format('%.5f %.5f', 2 / size, 2 / size)
+      -- the macro texture (the terrain's large light and dark patches over 32-64 m) as a second layer at half opacity:
+      -- the mesh shader lerps its layers, so each one's strengths doubled sum to the terrain's detail + macro (the
+      -- user, 2026-11-01: "the mesh dose not have the fake shadow effect like the normal ground")
+      local mtex = get('baseColorMacroTex')
+      local k = (mtex ~= '' and M.FINE_MACRO) and 2 or 1
+      local function S(field, dflt) return tostring(k * strengthAt(get(field), get('detailDistances'), dflt)) end
       m:setField('detailMap', 0, btex)
-      m:setField('detailBaseColorMapStrength', 0, tostring(strengthAt(get('baseColorDetailStrength'), get('detailDistances'), 0.25)))
+      m:setField('detailBaseColorMapStrength', 0, S('baseColorDetailStrength', 0.25))
       m:setField('detailMapUseUV', 0, '1')
       m:setField('detailScale', 0, sc)
       local ntex = get('normalDetailTex')
       if ntex ~= '' then
         m:setField('detailNormalMap', 0, ntex)
         m:setField('normalDetailMapUseUV', 0, '1')
-        m:setField('detailNormalMapStrength', 0, tostring(strengthAt(get('normalDetailStrength'), get('detailDistances'), 1)))
+        m:setField('detailNormalMapStrength', 0, S('normalDetailStrength', 1))
       end
       local rtex = get('roughnessDetailTex')
       m:setField('roughnessFactor', 0, '1')
       m:setField('roughnessMap', 0, M.FINE_ROUGHNESS_BASE)
       if rtex ~= '' then
         m:setField('roughnessDetailMap', 0, rtex)
-        m:setField('detailRoughnessMapStrength', 0, tostring(strengthAt(get('roughnessDetailStrength'), get('detailDistances'), 1)))
+        m:setField('detailRoughnessMapStrength', 0, S('roughnessDetailStrength', 1))
       end
       local atex = get('aoDetailTex')
       m:setField('ambientOcclusionMap', 0, M.FINE_AO_BASE)
       if atex ~= '' then
         m:setField('ambientOcclusionDetailMap', 0, atex)
-        m:setField('detailAoMapStrength', 0, tostring(strengthAt(get('aoDetailStrength'), get('detailDistances'), 0.8)))
+        m:setField('detailAoMapStrength', 0, S('aoDetailStrength', 0.8))
+      end
+      if k == 2 then
+        local msize = math.max(tonumber(get('baseColorMacroTexSize')) or 32, 1) * M.square
+        local ms = tostring(2 * strengthAt(get('baseColorMacroStrength'), get('macroDistances'), 0.12))
+        local f1 = { { 'opacityFactor', '0.5' }, { 'useAnisotropic', '1' }, { 'roughnessFactor', '1' },
+          { 'roughnessMap', M.FINE_ROUGHNESS_BASE }, { 'ambientOcclusionMap', M.FINE_AO_BASE },
+          { 'detailMap', mtex }, { 'detailBaseColorMapStrength', ms }, { 'detailMapUseUV', '1' },
+          { 'detailScale', string.format('%.5f %.5f', 2 / msize, 2 / msize) } }
+        for _, f in ipairs(f1) do m:setField(f[1], 1, f[2]) end
+        m:setField('activeLayers', 0, '2')
       end
     else
       -- (satmat's neutral ground grain, mean 0.5 grey)
