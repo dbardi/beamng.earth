@@ -153,11 +153,16 @@ def block_fine(frame, gen, raw, keep, cx, cy, size, out_dir, stem, aid, layers=N
     per = int(round(PIECE_M / sq))
 
     def heights(ji, k):
+        # (each point once: neighbouring cells share their sides' points, a fifth of them at k = 8)
         pts = np.asarray(fast._ef.fine_points(x0, y0, sq, k, ji))
-        la, lo, _ = frame.enu_to_geodetic(pts[:, 0], pts[:, 1], np.zeros(len(pts)))
+        a, b = np.divmod(np.arange((k + 1) ** 2), k + 1)
+        key = (ji[:, :1] * k + a[None, :]) * (1 << 24) + (ji[:, 1:] * k + b[None, :])
+        _, first, inv = np.unique(key.ravel(), return_index=True, return_inverse=True)
+        q = pts[first]
+        la, lo, _ = frame.enu_to_geodetic(q[:, 0], q[:, 1], np.zeros(len(q)))
         la, lo = np.asarray(la, np.float64), np.asarray(lo, np.float64)
         z = np.asarray(frame.geodetic_to_enu(la, lo, np.asarray(gen(la, lo), np.float64))[2], np.float64)
-        return np.ascontiguousarray(z.reshape(len(ji), (k + 1) ** 2))
+        return np.ascontiguousarray(z[inv.reshape(-1)].reshape(len(ji), (k + 1) ** 2))
 
     # the fine cells: an adaptive triangulation of their ground (earthfast.fine_tin), not a grid
     ji = np.ascontiguousarray(np.c_[J, I], np.int64)
