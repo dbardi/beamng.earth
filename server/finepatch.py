@@ -106,10 +106,11 @@ def material_name(bank_, layer):
 
 
 def bank(cx, cy, size):
-    """A block's material bank, 0..3 by its centre's parity on the blocks' centre grid (size / 4 samples of the lattice):
-    a block and its neighbours (the next block, whose pieces are made while this one shows) never share one."""
+    """A block's material bank, 0..8 by its centre on the blocks' centre grid (size / 4 samples of the lattice) modulo
+    3 each way: a block and the next one shown (up to two grid steps away; its pieces are made while this one shows)
+    never share one (by parity, a block two steps on did, and its pieces were made in the swap: 3.2 s, 2026-11-01)."""
     g = size * heightmap.SQUARE / 8.0
-    return int(round(cx / g)) % 2 + 2 * (int(round(cy / g)) % 2)
+    return int(round(cx / g)) % 3 + 3 * (int(round(cy / g)) % 3)
 
 
 def block_fine(frame, gen, raw, keep, cx, cy, size, out_dir, stem, aid, layers=None):

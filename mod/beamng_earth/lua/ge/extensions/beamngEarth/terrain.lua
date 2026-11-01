@@ -549,9 +549,11 @@ local function finePiece(p, staged)
   o:setField('decalType', 0, 'Visible Mesh')
   o:setField('dynamic', 0, 'true')
   o.canSave = false
-  o:setPosition(vec3(p.pos[1], p.pos[2], p.pos[3]))
+  -- (staged: drawn, FINE_STAGE_DROP_M under its place, under the ground shown there: a new shape's first draw is
+  -- ~11 ms (its buffers, its materials), all of them in the swap's frame when made hidden (1.3 s of RenderShadows on
+  -- the Stelvio, 2026-11-01); the shadow pass round the camera draws them now, one a frame)
+  o:setPosition(vec3(p.pos[1], p.pos[2], p.pos[3] - (staged and M.FINE_STAGE_DROP_M or 0)))
   o:registerObject('')
-  if staged then o.hidden = true end
   fineMade = fineMade + 1
   local id = o:getID()
   local sl = partSlot(p)
@@ -580,6 +582,7 @@ end
 -- the swap held its frame 140 ms on the Stelvio, 2026-11-01): { key (its .ter), fine, ids {part index: id}, next }.
 local stage = nil
 M.FINE_STEP_MS = 4
+M.FINE_STAGE_DROP_M = 4
 
 local function stageDrop()
   if not stage then return end
@@ -592,13 +595,16 @@ local function stageDrop()
 end
 
 -- A block arrived (terrain_ready, before its commit): its pieces are made ahead (fineStep).
-function M.finePrepare(msg)
+-- sameBlock: the shown block's own refresh (core: the graded block after a teleport's provisional one), whose
+-- materials are the shown ones (its photo alike: fineMaterial keeps them)
+function M.finePrepare(msg, sameBlock)
   if type(msg) ~= 'table' or not fineValid(msg.fine) or type(msg.ter) ~= 'string' then return end
+  M.finePrepared = msg.ter
   if stage and stage.key == msg.ter then return end
   stageDrop()
   -- (its materials take its photo now: a bank of their own, never the shown block's, finepatch.bank; a block in the
   -- shown one's bank (a far jump) is made at its swap instead)
-  if M.fine.bank ~= nil and msg.fine.bank == M.fine.bank then return end
+  if M.fine.bank ~= nil and msg.fine.bank == M.fine.bank and not sameBlock then return end
   fineMaterials(msg.fine, type(msg.base) == 'string' and msg.base or nil)
   stage = { key = msg.ter, fine = msg.fine, ids = {}, next = 1 }
 end
@@ -607,10 +613,13 @@ end
 function M.fineStep()
   if not stage or stage.next > #stage.fine.parts then return end
   local sw = stopwatch.new()
-  while stage.next <= #stage.fine.parts and sw() < M.FINE_STEP_MS do
+  -- (one new shape a frame at most: its making and its first draw each ~11 ms)
+  local made = 0
+  while stage.next <= #stage.fine.parts and (made == 0 or sw() < M.FINE_STEP_MS) and made < 1 do
     local i = stage.next
     stage.ids[i] = finePiece(stage.fine.parts[i], true) or false
     stage.next = i + 1
+    made = made + 1
   end
 end
 
@@ -620,11 +629,15 @@ local function fineMake(fine, base, terPath)
   if not fineValid(fine) then stageDrop(); return ids end
   fineMaterials(fine, base)
   local st_ = (stage and stage.key == terPath) and stage or nil
+  -- (a swap without its pieces made ahead: what was staged instead, for the log; core's commit line)
+  M.fineMiss = (not st_) and { ter = terPath, staged = stage and stage.key or false, bank = fine.bank,
+    shown = M.fine.bank, prepared = M.finePrepared } or nil
   for i, p in ipairs(fine.parts) do
     local id = st_ and st_.ids[i]
     local o = id and scenetree.findObjectById(id)
     if o then
       o.hidden = false
+      o:setPosition(vec3(p.pos[1], p.pos[2], p.pos[3]))
       if p.collide ~= false then o:setField('collisionType', 0, 'Visible Mesh Final') end
       ids[#ids + 1] = id
       st_.ids[i] = nil
@@ -648,6 +661,12 @@ end
 -- The current block's photo changed (setBase: its stand-in, then its full photo): the fine pieces' too.
 local function fineBase(base)
   if M.fine.fine then fineMaterials(M.fine.fine, base) end
+end
+
+-- Are the pieces of .ter path `ter` all made ahead (or has it none to make)?
+function M.fineReady(ter, fine)
+  if not fineValid(fine) then return true end
+  return stage ~= nil and stage.key == ter and stage.next > #stage.fine.parts
 end
 
 function M.fineStatus()

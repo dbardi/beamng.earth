@@ -218,7 +218,7 @@ class BankTest(unittest.TestCase):
     def test_neighbours_never_share_a_bank(self):
         for size, g in ((512, 128.0), (1024, 256.0)):
             b = finepatch.bank(0.0, 0.0, size)
-            for dx in (-1, 0, 1):
-                for dy in (-1, 0, 1):
+            for dx in (-2, -1, 0, 1, 2):
+                for dy in (-2, -1, 0, 1, 2):
                     if dx or dy:
                         self.assertNotEqual(finepatch.bank(dx * g, dy * g, size), b)
