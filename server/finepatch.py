@@ -172,8 +172,8 @@ def block_fine(frame, gen, raw, keep, cx, cy, size, out_dir, stem, aid, layers=N
     fast.require(136, "fine_tin")         # (136: its inner corners its own heights)
     import time
     t0 = time.perf_counter()
-    fast.require(135, "fine_filter")
-    zs = np.asarray(fast._ef.fine_filter(ji, heights(ji, TIN_K), FILTER_R))
+    fast.require(138, "fine_filter")       # (138: the terrain's ground beside the cells)
+    zs = np.asarray(fast._ef.fine_filter(ji, heights(ji, TIN_K), FILTER_R, ud))
     t1 = time.perf_counter()
     P, T, tcell, tpiece = fast._ef.fine_tin(x0, y0, sq, ji, zs, ud, cells8, per, TIN_TOL_M, TIN_MAX_TRIS)
     t2 = time.perf_counter()

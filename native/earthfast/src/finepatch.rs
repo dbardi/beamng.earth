@@ -666,11 +666,13 @@ fn morph(a: &[f32], w: usize, h: usize, r: usize, max: bool) -> Vec<f32> {
 /// the cells' points. A flat road, a plane, a crest or a wall's step wider than the window comes through as it is;
 /// a narrower one is levelled: grading's slivers between two cores (the natural ground standing up as a 1.4 m fin
 /// between a hairpin's legs) and the zigzag of a step's line, which the terrain's 2 m lattice never drew and the fine
-/// mesh did, as spikes (the user, 2026-11-01). Points outside the cells count as no ground.
+/// mesh did, as spikes (the user, 2026-11-01). Beside the cells the windows see the terrain's own ground (u, the
+/// block's samples, bilinear); a point whose windows reach past the block is left as it is.
 #[pyfunction]
 pub fn fine_filter<'py>(py: Python<'py>, cells: PyReadonlyArray2<'py, i64>, z: PyReadonlyArray2<'py, f64>,
-                        radius: i64) -> Bound<'py, PyArray2<f64>> {
-    let (c, z) = (cells.as_array(), z.as_array());
+                        radius: i64, u: PyReadonlyArray2<'py, f64>) -> Bound<'py, PyArray2<f64>> {
+    let (c, z, u) = (cells.as_array(), z.as_array(), u.as_array());
+    let (uy, ux) = (u.nrows() as i64, u.ncols() as i64);
     let n = c.nrows();
     let wv = ((z.ncols() as f64).sqrt().round() as usize).max(2);
     let k = wv - 1;
@@ -702,7 +704,24 @@ pub fn fine_filter<'py>(py: Python<'py>, cells: PyReadonlyArray2<'py, i64>, z: P
         let mut a = vec![f32::NAN; w * w];
         for cj in 0..cells_side as i64 {
             for ci in 0..cells_side as i64 {
-                if let Some(&row) = index.get(&(cj0 + cj, ci0 + ci)) {
+                let (gj, gi) = (cj0 + cj, ci0 + ci);
+                if !index.contains_key(&(gj, gi)) && gj >= 0 && gi >= 0 && gj + 1 < uy && gi + 1 < ux {
+                    // (beside the cells: the terrain's own ground, its samples bilinear, so a window by the patch's
+                    // edge sees ground all round)
+                    let (gju, giu) = (gj as usize, gi as usize);
+                    let (u00, u10, u01, u11) = (u[[gju, giu]], u[[gju, giu + 1]], u[[gju + 1, giu]], u[[gju + 1, giu + 1]]);
+                    for aa in 0..wv {
+                        for bb in 0..wv {
+                            let (fy, fx) = (aa as f64 / k as f64, bb as f64 / k as f64);
+                            let v = (u00 * (1.0 - fx) + u10 * fx) * (1.0 - fy) + (u01 * (1.0 - fx) + u11 * fx) * fy;
+                            let q = (cj as usize * k + aa) * w + ci as usize * k + bb;
+                            if a[q].is_nan() {
+                                a[q] = v as f32;
+                            }
+                        }
+                    }
+                }
+                if let Some(&row) = index.get(&(gj, gi)) {
                     for aa in 0..wv {
                         for bb in 0..wv {
                             a[(cj as usize * k + aa) * w + ci as usize * k + bb] = z[[row, aa * wv + bb]] as f32;
@@ -713,13 +732,21 @@ pub fn fine_filter<'py>(py: Python<'py>, cells: PyReadonlyArray2<'py, i64>, z: P
         }
         let opened = morph(&morph(&a, w, w, r, false), w, w, r, true);
         let closed = morph(&morph(&opened, w, w, r, true), w, w, r, false);
+        // (only where the four passes saw ground all round: by the block's edge a window cut short raised or lowered
+        // a slope by up to its grade x the window: steps, 2026-11-01)
+        let have: Vec<f32> = a.iter().map(|v| if v.is_nan() { 0.0 } else { 1.0 }).collect();
+        let mut full = have.clone();
+        for _ in 0..4 {
+            full = morph(&full, w, w, r, false);
+        }
         for &row in rows {
             let (cj, ci) = ((c[[row, 0]] - cj0) as usize, (c[[row, 1]] - ci0) as usize);
             for aa in 0..wv {
                 for bb in 0..wv {
-                    let v = closed[(cj * k + aa) * w + ci * k + bb];
+                    let q = (cj * k + aa) * w + ci * k + bb;
+                    let v = closed[q];
                     let z0 = z[[row, aa * wv + bb]];
-                    if !v.is_nan() && (v - z0 as f32).abs() > 1e-3 {     // (the rest at full precision)
+                    if full[q] > 0.5 && !v.is_nan() && (v - z0 as f32).abs() > 1e-3 {     // (the rest at full precision)
                         out[[row, aa * wv + bb]] = v as f64;
                     }
                 }

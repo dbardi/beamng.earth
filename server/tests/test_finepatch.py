@@ -203,11 +203,21 @@ class FineFilterTest(unittest.TestCase):
             z = np.where(x >= 30.0, 9.0, z)                                      # a wall's step
             return z
         fin = (x > 4.0) & (x < 4.75)
+        # (the block's samples round the cells: a margin of 3 cells, the patch at cells 3..22)
+        gx = np.arange(26) * sq - 3 * sq
+        U = np.ascontiguousarray(np.tile(ground(gx), (26, 1)))
+        U2 = np.ascontiguousarray(np.tile(1.5 * gx, (26, 1)))
+        ji = ji + 3
+        pts = pts + 3 * sq
         z = ground(x) + np.where(fin, 1.4, 0.0)
-        out = np.asarray(fast._ef.fine_filter(ji, np.ascontiguousarray(z.reshape(len(ji), -1)), 3)).ravel()
+        out = np.asarray(fast._ef.fine_filter(ji, np.ascontiguousarray(z.reshape(len(ji), -1)), 3, U)).ravel()
         self.assertLess(float(np.abs(out[fin]).max()), 0.01, "the fin levelled")
-        inner = (x > 1.0) & (x < 39.0)                  # (the block's edge: half a window of no ground)
-        self.assertLess(float(np.abs(out - ground(x))[inner & ~fin].max()), 1e-3, "the rest as it was")
+        self.assertLess(float(np.abs(out - ground(x))[~fin].max()), 1e-3, "the rest as it was, by the edge too")
+        self.assertLess(float(np.abs(out[fin]).max()), 0.01)
+        # (a steep slope to the patch's edge: left as it is there, not raised by a window cut short)
+        zs = np.ascontiguousarray((1.5 * x).reshape(len(ji), -1))
+        out = np.asarray(fast._ef.fine_filter(ji, zs, 3, U2)).ravel()
+        self.assertLess(float(np.abs(out - 1.5 * x).max()), 1e-3)
 
 
 if __name__ == "__main__":
