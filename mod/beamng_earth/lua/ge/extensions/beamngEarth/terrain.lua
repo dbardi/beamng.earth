@@ -367,324 +367,7 @@ end
 -- importMaps (the block exists with its material set-up) and at the same square size: returns false
 -- (nothing changed) otherwise, and the caller imports. The .ter names its materials (server
 -- surface.write_ter: layers.materials, or M.MATERIAL alone). The caller does NOT rebuild collision.
--- Fine ground (server finepatch.py, BNE_FINE=on): a block's sharp graded cells are holes in its .ter, filled by a 0.5 m
--- mesh of the same ground in pieces (fine.parts: {shape, pos, slot}, colliding), each cell drawn with its surface
--- layer's material (fine.materials: {name, layer}; a bank of four by block, finepatch.bank): the block's aerial photo
--- (its roads painted in; the pieces' UV0 spans the block from its south-west corner) and the layer's detail texture on
--- UV1 (world-locked), as the terrain draws it. The pieces are made in the frame the .ter goes in (M.swap: a hole never
--- shows without its fill, a car never meets one), the old block's deleted right after, and the static collision
--- reloaded (it applies the next frame, with the .ter's).
-M.fine = { ids = {}, fine = nil, bank = nil }
-local fineMade = 0
-
--- The game's packed copy of the block photo (its terrain texture cache, sRGB BC7, written by the server:
--- terraincache.base_entry; named by xxh64 of the photo's path three times and the layers' ao map's), or nil. The PBR
--- material reads the photo's PNG as linear colour (the pieces washed out white, 2026-11-01); this file it decodes as the
--- terrain does.
-local function fineDds(base, layer)
-  if type(base) ~= 'string' then return nil end
-  local tm = type(layer) == 'string' and scenetree.findObject(layer) or nil
-  local ok, ao = pcall(function() return tm:getField('aoBaseTex', 0) end)
-  if not ok or type(ao) ~= 'string' or ao == '' then return nil end
-  local p = '/temp/art/terrainmaterialcache/' .. require('beamngEarth/xxh64').hex(base .. base .. base .. ao) .. '.dds'
-  return FS:fileExists(p) and p or nil
-end
-
-local function fineTexture(m, base, layer)
-  local satmat = require('beamngEarth/satmat')
-  local dds = fineDds(base, layer)
-  if dds then
-    local layers = tostring(m:getField('activeLayers', 0))
-    m:setField('version', 0, '1.5')
-    satmat._setTexture(m, dds, false)
-    m:setField('baseColorMap', 1, dds)      -- (the macro layer's photo: fineMaterial)
-    if layers == '2' then m:setField('activeLayers', 0, '2') end     -- (_setTexture set one)
-  elseif type(base) == 'string' and FS:fileExists(base) then
-    m:setField('version', 0, '1')      -- (the PNG: the legacy material, which reads it as the terrain does)
-    satmat._setTexture(m, base, false)
-  else
-    m:setField('diffuseColor', 0, satmat.FALLBACK_COLOR)
-  end
-end
-
--- A fine material: the terrain's look (the engine's terrain shader, material/shadergen/terrainMat + terrain.h): the block's
--- photo plus its surface layer's detail colour (2 x detail - 1, at the layer's near strength: the mesh shader adds
--- its detail alike), the layer's detail normal, roughness and ao over the level's flat base maps, on the same
--- texture coordinates (the server's UV1: block-local metres / 2 from half a sample on). The user, 2026-11-01: "make the
--- texture of the finer mesh perfectly blend in and match with the normal terrain" (the satmat grain and a fixed
--- normal strength drew it a shade off, in squares). No layer: satmat's ground grain. Not matched: the macro textures
--- (subtle, 64 m) and the detail's fade with distance (the mesh's strengths are the terrain's at FINE_LOOK_M).
-M.FINE_ROUGHNESS_BASE = TERRAIN_DIR .. 'bngEarth_base_r.png'
-M.FINE_AO_BASE = TERRAIN_DIR .. 'bngEarth_base_ao.png'
--- (a strength pair "near far" as the terrain shader takes it at FINE_LOOK_M from the camera with the layer's
--- detailDistances "a b c d": near up to b, toward far by c, far from d: terrain.h's calculateStrenth)
-M.FINE_LOOK_M = 20
-M.FINE_MACRO = true
-local function nums(v)
-  local o = {}
-  for x in tostring(v or ''):gmatch('[%d%.%-]+') do o[#o + 1] = tonumber(x) end
-  return o
-end
-local function strengthAt(v, dist, default)
-  local s, d = nums(v), nums(dist)
-  if not s[1] then return default end
-  local nearS, farS = s[1], s[2] or s[1]
-  if #d < 4 then return nearS end
-  local x = M.FINE_LOOK_M
-  local sat = function(a) return math.max(0, math.min(1, a)) end
-  local mid = d[3] > d[2] and sat((x - d[2]) / (d[3] - d[2])) or 1
-  return nearS + (farS - nearS) * mid
-end
-
--- name -> the photo its fine material was made with (fineMaterial)
-local finePhoto = {}
-local stage    -- (fineStep's pieces made ahead: below)
-
-local function fineMaterial(name, layer, base, rim)
-  local satmat = require('beamngEarth/satmat')
-  local m = scenetree.findObject(name)
-  if m and finePhoto[name] == (base or false) then return m end
-  -- (another photo: a material no shown piece uses (another bank than the shown block's: finepatch.bank) is made
-  -- again, its textures from the engine's cache; reloading one re-read every texture from disk, the detail maps' PNGs
-  -- too: ~200 ms a material, 2-4 s a block swap on the Stelvio, 2026-11-01. One in use is reloaded)
-  -- (in use: the shown block's bank, or the staged one's once it has pieces; deleting a Material a piece draws with
-  -- crashed the game, 2026-11-01: a staged block's photo replaced by its full one before its swap)
-  local bank = tonumber(tostring(name):match('^bngEarthFine(%d+)_'))
-  local staged = stage and stage.fine and stage.fine.bank == bank and next(stage.ids) ~= nil
-  if m and bank ~= M.fine.bank and not staged then
-    m:delete()
-    m = nil
-  end
-  finePhoto[name] = base or false
-  local fresh = not m
-  if fresh then
-    m = createObject('Material')
-    m:setField('mapTo', 0, name)
-  end
-  -- (the PBR material, as the terrain's, with the photo's sRGB copy: the legacy one (version 1) adds its detail map at
-  -- full strength and in gamma space, the pieces a shade darker and grainier than the terrain beside them, 2026-11-01)
-  fineTexture(m, base, layer)
-  if fresh then
-    for _, f in ipairs(satmat.FIELDS) do m:setField(f[1], 0, f[2]) end
-    local tm = type(layer) == 'string' and scenetree.findObject(layer) or nil
-    local get = function(f) local ok, v = pcall(function() return tm:getField(f, 0) end) return ok and v or '' end
-    local btex = tm and get('baseColorDetailTex') or ''
-    if btex ~= '' then
-      -- (detail sizes in samples: one repeat every size x square metres; UV1 is metres / 2)
-      local size = math.max(tonumber(get('baseColorDetailTexSize')) or 1, 0.25) * M.square
-      local sc = string.format('%.5f %.5f', 2 / size, 2 / size)
-      -- the macro texture (the terrain's large light and dark patches over 32-64 m) as a second layer at half opacity:
-      -- the mesh shader lerps its layers, so each one's strengths doubled sum to the terrain's detail + macro (the
-      -- user, 2026-11-01: "the mesh dose not have the fake shadow effect like the normal ground")
-      local mtex = get('baseColorMacroTex')
-      local k = (mtex ~= '' and M.FINE_MACRO) and 2 or 1
-      local function S(field, dflt) return tostring(k * strengthAt(get(field), get('detailDistances'), dflt)) end
-      m:setField('detailMap', 0, btex)
-      m:setField('detailBaseColorMapStrength', 0, S('baseColorDetailStrength', 0.25))
-      m:setField('detailMapUseUV', 0, '1')
-      m:setField('detailScale', 0, sc)
-      local ntex = get('normalDetailTex')
-      if ntex ~= '' then
-        m:setField('detailNormalMap', 0, ntex)
-        m:setField('normalDetailMapUseUV', 0, '1')
-        m:setField('detailNormalMapStrength', 0, S('normalDetailStrength', 1))
-      end
-      local rtex = get('roughnessDetailTex')
-      m:setField('roughnessFactor', 0, '1')
-      m:setField('roughnessMap', 0, M.FINE_ROUGHNESS_BASE)
-      if rtex ~= '' then
-        m:setField('roughnessDetailMap', 0, rtex)
-        m:setField('detailRoughnessMapStrength', 0, S('roughnessDetailStrength', 1))
-      end
-      local atex = get('aoDetailTex')
-      m:setField('ambientOcclusionMap', 0, M.FINE_AO_BASE)
-      if atex ~= '' then
-        m:setField('ambientOcclusionDetailMap', 0, atex)
-        m:setField('detailAoMapStrength', 0, S('aoDetailStrength', 0.8))
-      end
-      if k == 2 then
-        local msize = math.max(tonumber(get('baseColorMacroTexSize')) or 32, 1) * M.square
-        local ms = tostring(2 * strengthAt(get('baseColorMacroStrength'), get('macroDistances'), 0.12))
-        local f1 = { { 'opacityFactor', '0.5' }, { 'useAnisotropic', '1' }, { 'roughnessFactor', '1' },
-          { 'roughnessMap', M.FINE_ROUGHNESS_BASE }, { 'ambientOcclusionMap', M.FINE_AO_BASE },
-          { 'detailMap', mtex }, { 'detailBaseColorMapStrength', ms }, { 'detailMapUseUV', '1' },
-          { 'detailScale', string.format('%.5f %.5f', 2 / msize, 2 / msize) } }
-        for _, f in ipairs(f1) do m:setField(f[1], 1, f[2]) end
-        m:setField('activeLayers', 0, '2')
-      end
-    else
-      -- (satmat's neutral ground grain, mean 0.5 grey)
-      m:setField('detailMap', 0, satmat.DETAIL_MAP)
-      for _, f in ipairs(satmat.DETAIL_FIELDS) do m:setField(f[1], 0, f[2]) end
-    end
-    -- (a rim piece: drawn 1 cm over the terrain's own pale squares; its edges cast lines of shadow on the road)
-    if rim then m:setField('castShadows', 0, '0') end
-    m.canSave = false
-    m:registerObject(name)
-  else
-    pcall(function() m:flush() end)
-    pcall(function() m:reload() end)
-  end
-  return m
-end
-
--- A block's fine materials ({{name, layer}, ...}) with its photo.
-local function fineMaterials(fine, base)
-  for _, e in ipairs(type(fine) == 'table' and type(fine.materials) == 'table' and fine.materials or {}) do
-    if type(e) == 'table' and type(e[1]) == 'string' then fineMaterial(e[1], e[2], base, e[3] == true) end
-  end
-end
-
--- pooled pieces (server pool_shapes: slot_<n> paths): object id -> its slot, let go with the object
-local pieceSlot = {}
-local function pooled() return require('beamngEarth/roads') end
-local function partSlot(p) return p.slot and pooled().pooledSlot(p.shape, p.slot) or nil end
-
--- A shown piece's collision: its own collision meshes ("Collision Mesh": the server's split into small meshes, built
--- fast on Windows), else its drawn mesh; none for a rim piece (collide false)
-local function pieceCollision(p)
-  if p.collide == false then return 'None' end
-  return p.collision == 'mesh' and 'Collision Mesh' or 'Visible Mesh Final'
-end
-
-local function finePiece(p, staged)
-  if type(p.shape) ~= 'string' or type(p.pos) ~= 'table' or not FS:fileExists(p.shape) then
-    pooled().pooledRelease(partSlot(p), nil)
-    return nil
-  end
-  local o = createObject('TSStatic')
-  o:setField('shapeName', 0, p.shape)
-  -- (made ahead, staged: hidden and not colliding until its block goes in: its ground differs a little from the block
-  -- in place over the same cells)
-  o:setField('collisionType', 0, staged and 'None' or pieceCollision(p))
-  o:setField('decalType', 0, 'Visible Mesh')
-  o:setField('dynamic', 0, 'true')
-  o.canSave = false
-  -- (staged: drawn, FINE_STAGE_DROP_M under its place, under the ground shown there: a new shape's first draw is
-  -- ~11 ms (its buffers, its materials), all of them in the swap's frame when made hidden (1.3 s of RenderShadows on
-  -- the Stelvio, 2026-11-01); the shadow pass round the camera draws them now, one a frame)
-  o:setPosition(vec3(p.pos[1], p.pos[2], p.pos[3] - (staged and M.FINE_STAGE_DROP_M or 0)))
-  o:registerObject('')
-  fineMade = fineMade + 1
-  local id = o:getID()
-  local sl = partSlot(p)
-  if sl then
-    pooled().pooledMade(id, p.shape)
-    pieceSlot[id] = sl
-  end
-  return id
-end
-
-local function pieceDelete(id)
-  local o = scenetree.findObjectById(id)
-  if o then o:delete() end
-  local sl = pieceSlot[id]
-  if sl then
-    pieceSlot[id] = nil
-    pooled().pooledRelease(sl, id)
-  end
-end
-
-local function fineValid(fine)
-  return type(fine) == 'table' and type(fine.parts) == 'table' and type(fine.materials) == 'table'
-end
-
--- The pieces of the next block, made a few a frame before its swap (fineStep: each new shape ~2 ms to load; all at
--- the swap held its frame 140 ms on the Stelvio, 2026-11-01): { key (its .ter), fine, ids {part index: id}, next }.
-stage = nil      -- (declared before fineMaterial, which asks whether the staged pieces use a bank)
-M.FINE_STEP_MS = 4
-M.FINE_STAGE_DROP_M = 4
-
-local function stageDrop()
-  if not stage then return end
-  for i, p in ipairs(stage.fine.parts) do
-    local id = stage.ids[i]
-    if id then pieceDelete(id)
-    elseif id == nil then pooled().pooledRelease(partSlot(p), nil) end   -- (never made: its slot goes now)
-  end
-  stage = nil
-end
-
--- A block arrived (terrain_ready, before its commit): its pieces are made ahead (fineStep).
--- sameBlock: the shown block's own refresh (core: the graded block after a teleport's provisional one), whose
--- materials are the shown ones (its photo alike: fineMaterial keeps them)
-function M.finePrepare(msg, sameBlock)
-  if type(msg) ~= 'table' or not fineValid(msg.fine) or type(msg.ter) ~= 'string' then return end
-  M.finePrepared = msg.ter
-  if stage and stage.key == msg.ter then return end
-  stageDrop()
-  -- (its materials take its photo now: a bank of their own, never the shown block's, finepatch.bank; a block in the
-  -- shown one's bank (a far jump) is made at its swap instead)
-  if M.fine.bank ~= nil and msg.fine.bank == M.fine.bank and not sameBlock then return end
-  fineMaterials(msg.fine, type(msg.base) == 'string' and msg.base or nil)
-  stage = { key = msg.ter, fine = msg.fine, ids = {}, next = 1 }
-end
-
--- Make staged pieces for up to M.FINE_STEP_MS this frame (core.lua's update).
-function M.fineStep()
-  if not stage or stage.next > #stage.fine.parts then return end
-  local sw = stopwatch.new()
-  -- (one new shape a frame at most: its making and its first draw each ~11 ms)
-  local made = 0
-  while stage.next <= #stage.fine.parts and (made == 0 or sw() < M.FINE_STEP_MS) and made < 1 do
-    local i = stage.next
-    stage.ids[i] = finePiece(stage.fine.parts[i], true) or false
-    stage.next = i + 1
-    made = made + 1
-  end
-end
-
--- The block's fine pieces made (TSStatic ids, shown and colliding): the staged ones of this .ter, the rest now.
-local function fineMake(fine, base, terPath)
-  local ids = {}
-  if not fineValid(fine) then stageDrop(); return ids end
-  fineMaterials(fine, base)
-  local st_ = (stage and stage.key == terPath) and stage or nil
-  -- (a swap without its pieces made ahead: what was staged instead, for the log; core's commit line)
-  M.fineMiss = (not st_) and { ter = terPath, staged = stage and stage.key or false, bank = fine.bank,
-    shown = M.fine.bank, prepared = M.finePrepared } or nil
-  for i, p in ipairs(fine.parts) do
-    local id = st_ and st_.ids[i]
-    local o = id and scenetree.findObjectById(id)
-    if o then
-      o.hidden = false
-      o:setPosition(vec3(p.pos[1], p.pos[2], p.pos[3]))
-      if p.collide ~= false then o:setField('collisionType', 0, pieceCollision(p)) end
-      ids[#ids + 1] = id
-      st_.ids[i] = nil
-      -- (this message's own slot for it unused: the staged piece came from the earlier message's)
-      if st_.fine ~= fine then pooled().pooledRelease(partSlot(p), nil) end
-    else
-      local nid = finePiece(p, false)
-      if nid then ids[#ids + 1] = nid end
-    end
-  end
-  M.fineStaged = st_ and (st_.next - 1) or 0
-  if st_ then stage = nil end
-  stageDrop()
-  return ids
-end
-
-local function fineDelete(ids)
-  for _, id in ipairs(ids or {}) do pieceDelete(id) end
-end
-
--- The current block's photo changed (setBase: its stand-in, then its full photo): the fine pieces' too.
-local function fineBase(base)
-  if M.fine.fine then fineMaterials(M.fine.fine, base) end
-end
-
--- Are the pieces of .ter path `ter` all made ahead (or has it none to make)?
-function M.fineReady(ter, fine)
-  if not fineValid(fine) then return true end
-  return stage ~= nil and stage.key == ter and stage.next > #stage.fine.parts
-end
-
-function M.fineStatus()
-  return { pieces = #M.fine.ids, bank = M.fine.bank, made = fineMade, staged = stage and (stage.next - 1) or 0 }
-end
-
-function M.swap(terPath, squareSize, maxHeight, x, y, z, layers, base, baseSize, fine)
+function M.swap(terPath, squareSize, maxHeight, x, y, z, layers, base, baseSize)
   local tb = M.get()
   local sq = tonumber(squareSize)
   if not tb or not M.slots or not sq or math.abs(sq - M.square) > 1e-9 then return false end
@@ -700,8 +383,6 @@ function M.swap(terPath, squareSize, maxHeight, x, y, z, layers, base, baseSize,
   end
   local sw = stopwatch.new()
   local saved = {}
-  local fineIds = fineMake(fine, base or nil, terPath)      -- (with the .ter: its holes filled from the first frame)
-  local tFine = sw()
   local ok, err = pcall(function()
     if base ~= nil then
       local path = base or nil
@@ -733,13 +414,8 @@ function M.swap(terPath, squareSize, maxHeight, x, y, z, layers, base, baseSize,
       M.looked[name] = old.looked
     end
     log('W', 'beamngEarth', 'terrain .ter swap failed: ' .. tostring(err))
-    fineDelete(fineIds)
     return false
   end
-  fineDelete(M.fine.ids)
-  local hadFine = #M.fine.ids > 0
-  M.fine = { ids = fineIds, fine = fineValid(fine) and fine or nil, bank = fineValid(fine) and fine.bank or nil }
-  if #fineIds > 0 or hadFine then be:reloadCollision() end    -- (next frame, with the .ter's own)
   -- the materials this block lists that no block of this session listed before (a first use costs the engine
   -- its textures' load: hitch diagnosis, core's commit log)
   local fresh = {}
@@ -753,8 +429,7 @@ function M.swap(terPath, squareSize, maxHeight, x, y, z, layers, base, baseSize,
   -- Windows: every slot rebound after the swap again, as 1.5.4 did (~18 ms more per swap; REBIND_AFTER_SWAP).
   if base ~= nil and M.REBIND_AFTER_SWAP then M.setBase(base or nil, baseSize) end
   -- ms of the last swap: the base fields' preparation and the .ter's application, then the whole call; its materials
-  M.lastSwap = { apply = tApply, total = sw(), mats = #slots, fresh = #fresh > 0 and fresh or nil,
-    fine = #fineIds > 0 and tFine or nil, fineStaged = #fineIds > 0 and M.fineStaged or nil }
+  M.lastSwap = { apply = tApply, total = sw(), mats = #slots, fresh = #fresh > 0 and fresh or nil }
   return true
 end
 
@@ -774,7 +449,6 @@ function M.setBase(path, size)
     end
   end
   baseNow = path
-  fineBase(path)
   return true
 end
 
@@ -797,9 +471,6 @@ function M.hideGroundPlanes()
 end
 
 function M.delete()
-  stageDrop()
-  fineDelete(M.fine.ids)
-  M.fine = { ids = {}, fine = nil, bank = nil }
   local tb = M.get()
   if tb then tb:delete() end
 end
