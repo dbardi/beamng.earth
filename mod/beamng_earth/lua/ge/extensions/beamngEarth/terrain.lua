@@ -432,7 +432,7 @@ local function strengthAt(v, dist, default)
   return nearS + (farS - nearS) * mid
 end
 
-local function fineMaterial(name, layer, base)
+local function fineMaterial(name, layer, base, rim)
   local satmat = require('beamngEarth/satmat')
   local m = scenetree.findObject(name)
   local fresh = not m
@@ -480,6 +480,8 @@ local function fineMaterial(name, layer, base)
       m:setField('detailMap', 0, satmat.DETAIL_MAP)
       for _, f in ipairs(satmat.DETAIL_FIELDS) do m:setField(f[1], 0, f[2]) end
     end
+    -- (a rim piece: drawn 1 cm over the terrain's own pale squares; its edges cast lines of shadow on the road)
+    if rim then m:setField('castShadows', 0, '0') end
     m.canSave = false
     m:registerObject(name)
   else
@@ -492,7 +494,7 @@ end
 -- A block's fine materials ({{name, layer}, ...}) with its photo.
 local function fineMaterials(fine, base)
   for _, e in ipairs(type(fine) == 'table' and type(fine.materials) == 'table' and fine.materials or {}) do
-    if type(e) == 'table' and type(e[1]) == 'string' then fineMaterial(e[1], e[2], base) end
+    if type(e) == 'table' and type(e[1]) == 'string' then fineMaterial(e[1], e[2], base, e[3] == true) end
   end
 end
 

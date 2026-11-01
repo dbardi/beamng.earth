@@ -95,7 +95,9 @@ class BlockFineTest(unittest.TestCase):
             for p in fine["parts"]:
                 self.assertTrue(os.path.getsize(os.path.join(d, p["shape"])) > 0)
             b = finepatch.bank(0.0, 0.0, size)
-            self.assertEqual(fine["materials"], [[finepatch.material_name(b, __import__('surface').DIRT), "beamngEarthDirt"]])
+            name = finepatch.material_name(b, __import__('surface').DIRT)
+            # (and the rim's own, casting no shadow)
+            self.assertEqual(fine["materials"], [[name, "beamngEarthDirt"], [name + "r", "beamngEarthDirt", True]])
         flat = heightmap.surface_u(frame, raw, xs, ys)
         with tempfile.TemporaryDirectory() as d:
             holes, fine = finepatch.block_fine(frame, raw, raw, {"u": flat}, 0.0, 0.0, size, d, "b_fine", 1)

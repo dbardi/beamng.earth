@@ -28,7 +28,8 @@ K = 2                       # quads per cell side: 1 m (4 at 0.5 m: 4x the trian
 PIECE_M = 64.0              # m: a piece's square (at most 32 x 32 cells, 8192 triangles)
 MAX_CELLS = 40000           # per block (a mountain's worth); more: the steepest kept
 EDGE_CELLS = 3              # cells at the block's edge left to the terrain (its edge holes, the next block's seam)
-RIM_LIFT_M = 0.04           # m the mesh lies over the terrain inside the rim cells (the terrain draws them, pale)
+RIM_LIFT_M = 0.01           # m the mesh lies over the terrain inside the rim cells (the terrain draws them, pale; 4 cm
+                            # stood up at its edges, a shadow line on the road: the user, 2026-11-01)
 TIN_K = 8                   # the fine cells' heights sampled every 1 / TIN_K cell (0.25 m) for fine_tin ...
 TIN_TOL_M = 0.02            # ... put in where the triangles are this far off them
 TIN_MAX_TRIS = 16384        # per piece (32 x 32 cells; the 1 m grid's were 8192)
@@ -101,6 +102,9 @@ def block_fine(frame, gen, raw, keep, cx, cy, size, out_dir, stem, aid, layers=N
     fast.require(124, "fine_cells")
     import cdae
     u = np.ascontiguousarray(keep["u"], np.float64)
+    # (the mesh's outline and rim on the terrain's own stored heights, its height quantum's steps: up to 1.5 cm off
+    # them, the edges stood over the terrain or under it)
+    ud = np.ascontiguousarray(keep.get("drawn", u), np.float64)
     xs, ys = heightmap.sample_coords(cx, cy, size)
     r = np.ascontiguousarray(heightmap.surface_u(frame, raw, xs, ys), np.float64)
     cells = np.asarray(fast._ef.fine_cells(u, r, SHARP_DZ_M, GRADED_DZ_M, GROW))
@@ -139,13 +143,13 @@ def block_fine(frame, gen, raw, keep, cx, cy, size, out_dir, stem, aid, layers=N
     # the fine cells: an adaptive triangulation of their ground (earthfast.fine_tin), not a grid
     ji = np.ascontiguousarray(np.c_[J, I], np.int64)
     fast.require(127, "fine_tin")
-    P, T, tcell, tpiece = fast._ef.fine_tin(x0, y0, sq, ji, heights(ji, TIN_K), u, cells8, per, TIN_TOL_M,
+    P, T, tcell, tpiece = fast._ef.fine_tin(x0, y0, sq, ji, heights(ji, TIN_K), ud, cells8, per, TIN_TOL_M,
                                             TIN_MAX_TRIS)
     P, T, tcell, tpiece = np.asarray(P), np.asarray(T), np.asarray(tcell), np.asarray(tpiece)
     # (the rim cells: the grid mesh, drawn only, RIM_LIFT_M over the terrain's own pale squares)
     if len(RJ):
         rji = np.ascontiguousarray(np.c_[RJ, RI], np.int64)
-        RP, RT = fast._ef.fine_mesh(x0, y0, sq, K, rji, heights(rji, K), u, cells8,
+        RP, RT = fast._ef.fine_mesh(x0, y0, sq, K, rji, heights(rji, K), ud, cells8,
                                     np.ones(len(RJ), np.uint8), RIM_LIFT_M)
         RP, RT = np.asarray(RP), np.asarray(RT)
         tpc = 2 * K * K
@@ -166,8 +170,9 @@ def block_fine(frame, gen, raw, keep, cx, cy, size, out_dir, stem, aid, layers=N
         lay = np.full(len(J), surfacemod.DIRT, np.int64)
     used = sorted(set(int(v) for v in np.unique(lay)))
     b = bank(cx, cy, size)
-    mats = [material_name(b, k) for k in used]
-    tri_layer = np.searchsorted(used, lay[tcell])
+    # (the rim's own materials, casting no shadow: material_name + "r")
+    mats = [material_name(b, k) for k in used] + [material_name(b, k) + "r" for k in used]
+    tri_layer = np.searchsorted(used, lay[tcell]) + np.where(tpiece >= 10 ** 10, len(used), 0)
     # the pieces: PIECE_M squares from the block's corner (fine_tin's), the rim cells in pieces of their own, drawn
     # only (the terrain under them collides; the mesh 4 cm over it made ridges across the lanes)
     parts = []
@@ -188,7 +193,8 @@ def block_fine(frame, gen, raw, keep, cx, cy, size, out_dir, stem, aid, layers=N
         tris = inv.reshape(-1, 3)
         name = f"{stem}_{pi}_{pj}{'r' if rimp else ''}.cdae"
         cdae.write(os.path.join(out_dir, name), pos, tris, uvs=uv, uvs2=uv2, material=mats,
-                   normals=_normals(P[vi], tris, u, x0, y0, sq, cells8), tri_materials=tri_layer[ti], object_name="fine")
+                   normals=_normals(P[vi], tris, ud, x0, y0, sq, cells8), tri_materials=tri_layer[ti], object_name="fine")
         parts.append({"shape": name, "pos": [round(ox, 3), round(oy, 3), 0.0]} | ({"collide": False} if rimp else {}))
-    return holes, {"materials": [[material_name(b, k), surfacemod.MATERIALS[k][0]] for k in used], "bank": b,
+    return holes, {"materials": [[material_name(b, k), surfacemod.MATERIALS[k][0]] for k in used]
+                   + [[material_name(b, k) + "r", surfacemod.MATERIALS[k][0], True] for k in used], "bank": b,
                    "parts": parts, "cells": int(nfine), "rim": int(len(RJ))}
