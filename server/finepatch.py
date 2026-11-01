@@ -23,7 +23,8 @@ import heightmap
 FINE_ON = os.environ.get("BNE_FINE", "off") == "on"
 SHARP_DZ_M = 1.5            # m between a cell's highest and lowest corner: a sharp cell ...
 GRADED_DZ_M = 0.5           # ... where the grading moved the ground this much at one of its corners
-GROW = 1                    # cells round each sharp one drawn finely too (a slope's foot and top, the lanes beside)
+GROW = 2                    # cells round each sharp one drawn finely too (a slope's foot and top, the lanes beside; 1:
+                            # the outline on a cutting's crest, its straight lattice edges drew 2 m stairs, 2026-11-01)
 K = 2                       # quads per cell side: 1 m (4 at 0.5 m: 4x the triangles, no visible gain)
 PIECE_M = 64.0              # m: a piece's square (at most 32 x 32 cells, 8192 triangles)
 MAX_CELLS = 40000           # per block (a mountain's worth); more: the steepest kept
@@ -33,6 +34,10 @@ RIM_LIFT_M = 0.01           # m the mesh lies over the terrain inside the rim ce
 TIN_K = 8                   # the fine cells' heights sampled every 1 / TIN_K cell (0.25 m) for fine_tin ...
 TIN_TOL_M = 0.02            # ... put in where the triangles are this far off them
 TIN_MAX_TRIS = 16384        # per piece (32 x 32 cells; the 1 m grid's were 8192)
+# fine_rim_mesh's centre rule: the renderer draws a terrain cell split north-west to south-east (its collision is
+# bilinear: rays at cells' quarter points, 2026-11-01): covers on the other split left white half squares, on the higher
+# diagonal they bulged up steep cells as pale stairs
+RIM_CENTRE = 2
 DETAIL_M = 2.0              # the second UV set's metres per unit (farfield.DETAIL_M: satmat.lua's ground grain)
 
 
@@ -164,8 +169,8 @@ def block_fine(frame, gen, raw, keep, cx, cy, size, out_dir, stem, aid, layers=N
     # (the rim cells: covers drawn only, RIM_LIFT_M over the terrain's own pale squares, however it splits them)
     if len(RJ):
         rji = np.ascontiguousarray(np.c_[RJ, RI], np.int64)
-        fast.require(130, "fine_rim_mesh")
-        RP, RT = fast._ef.fine_rim_mesh(x0, y0, sq, rji, ud, RIM_LIFT_M)
+        fast.require(131, "fine_rim_mesh")
+        RP, RT = fast._ef.fine_rim_mesh(x0, y0, sq, rji, ud, RIM_LIFT_M, RIM_CENTRE)
         RP, RT = np.asarray(RP), np.asarray(RT)
         rcell = nfine + np.repeat(np.arange(len(RJ)), 4)          # (fine_rim_mesh: 4 triangles a cell)
         rpiece = (RJ // per)[rcell - nfine] * 100000 + (RI // per)[rcell - nfine] + 10 ** 10

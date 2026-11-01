@@ -562,7 +562,7 @@ pub fn fine_tin<'py>(py: Python<'py>, x0: f64, y0: f64, square: f64, cells: PyRe
 /// terrain's straight edges, lift up, as the fine mesh's outline. Returns (positions (5n, 3), triangles (4n, 3)).
 #[pyfunction]
 pub fn fine_rim_mesh<'py>(py: Python<'py>, x0: f64, y0: f64, square: f64, cells: PyReadonlyArray2<'py, i64>,
-                          u: PyReadonlyArray2<'py, f64>, lift: f64)
+                          u: PyReadonlyArray2<'py, f64>, lift: f64, centre: i64)
                           -> (Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<i64>>) {
     let (c, u) = (cells.as_array(), u.as_array());
     let n = c.nrows();
@@ -573,7 +573,13 @@ pub fn fine_rim_mesh<'py>(py: Python<'py>, x0: f64, y0: f64, square: f64, cells:
         let (ju, iu) = (j as usize, i as usize);
         let (a, b, cc, d) = (u[[ju, iu]], u[[ju, iu + 1]], u[[ju + 1, iu]], u[[ju + 1, iu + 1]]);   // sw se nw ne
         let (x, y) = (x0 + i as f64 * square, y0 + j as f64 * square);
-        let mid = ((a + d) * 0.5).max((b + cc) * 0.5);
+        // (centre: 0 the higher diagonal's middle, 1 the south-west to north-east one's, 2 the other's, 3 the mean)
+        let mid = match centre {
+            1 => (a + d) * 0.5,
+            2 => (b + cc) * 0.5,
+            3 => (a + b + cc + d) * 0.25,
+            _ => ((a + d) * 0.5).max((b + cc) * 0.5),
+        };
         for (px, py, h) in [(x, y, a), (x + square, y, b), (x + square, y + square, d), (x, y + square, cc),
                             (x + 0.5 * square, y + 0.5 * square, mid)] {
             pos.extend_from_slice(&[px, py, h + lift]);

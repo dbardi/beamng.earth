@@ -54,10 +54,10 @@ class FineCellsTest(unittest.TestCase):
 
     def test_rim_cover_over_the_terrain_either_split(self):
         """A rim cell's cover (fine_rim_mesh): its corners the terrain's samples lift up, its sides straight between
-        them (the fine mesh's outline alike), and nowhere under the terrain plus lift however the terrain splits the
-        cell (south-west to north-east or the other diagonal: the white half squares)."""
+        them (the fine mesh's outline alike); on the upper hull (centre 0) nowhere under the terrain plus lift however
+        it splits the cell, on finepatch.RIM_CENTRE's split exactly that plus lift."""
         u = np.array([[0.0, 3.0], [-1.0, 0.5]])                    # one cell, its diagonals' middles 0.25 and 1.0
-        P, T = (np.asarray(a) for a in fast._ef.fine_rim_mesh(0.0, 0.0, 2.0, np.array([[0, 0]], np.int64), u, 0.01))
+        P, T = (np.asarray(a) for a in fast._ef.fine_rim_mesh(0.0, 0.0, 2.0, np.array([[0, 0]], np.int64), u, 0.01, 0))
         self.assertEqual(T.shape, (4, 3))
         corner = {(0.0, 0.0): 0.0, (2.0, 0.0): 3.0, (0.0, 2.0): -1.0, (2.0, 2.0): 0.5}
         for x, y, z in P:
@@ -74,6 +74,15 @@ class FineCellsTest(unittest.TestCase):
                 nwse = ((1 - fx - fy) * 0.0 + fx * 3.0 + fy * -1.0) if fx + fy <= 1 else \
                     ((1 - fy) * 3.0 + (1 - fx) * -1.0 + (fx + fy - 1) * 0.5)
                 self.assertGreaterEqual(z, max(swne, nwse) + 0.01 - 1e-9)
+        P, T = (np.asarray(a) for a in fast._ef.fine_rim_mesh(0.0, 0.0, 2.0, np.array([[0, 0]], np.int64), u, 0.01,
+                                                               finepatch.RIM_CENTRE))
+        for t in T:
+            for w in rng.dirichlet([1, 1, 1], 20):
+                x, y, z = w @ P[t]
+                fx, fy = x / 2.0, y / 2.0
+                nwse = ((1 - fx - fy) * 0.0 + fx * 3.0 + fy * -1.0) if fx + fy <= 1 else \
+                    ((1 - fy) * 3.0 + (1 - fx) * -1.0 + (fx + fy - 1) * 0.5)
+                self.assertAlmostEqual(z, nwse + 0.01, places=9)
 
 
 class BlockFineTest(unittest.TestCase):
