@@ -61,6 +61,38 @@ pub fn fine_cells<'py>(py: Python<'py>, u: PyReadonlyArray2<'py, f64>, raw: PyRe
             out[j * cx + i] = (grown[j * cx + i] || all) as u8;
         }
     }
+    // (and every island of terrain inside a patch filled: the closing above fills gaps of one cell only, and an island
+    // of a few cells between a hairpin's legs, its corners all holes, drew pale whole; the user's report 2026-11-01. An
+    // island: terrain cells not connected (4-way) to the block's edge through terrain cells)
+    let mut outside = vec![false; cy * cx];
+    let mut stack: Vec<usize> = Vec::new();
+    for j in 0..cy {
+        for i in 0..cx {
+            if (j == 0 || i == 0 || j + 1 == cy || i + 1 == cx) && out[j * cx + i] == 0 {
+                outside[j * cx + i] = true;
+                stack.push(j * cx + i);
+            }
+        }
+    }
+    while let Some(k) = stack.pop() {
+        let (j, i) = (k / cx, k % cx);
+        let mut push = |a: usize, b: usize| {
+            let q = a * cx + b;
+            if !outside[q] && out[q] == 0 {
+                outside[q] = true;
+                stack.push(q);
+            }
+        };
+        if j > 0 { push(j - 1, i); }
+        if j + 1 < cy { push(j + 1, i); }
+        if i > 0 { push(j, i - 1); }
+        if i + 1 < cx { push(j, i + 1); }
+    }
+    for k in 0..cy * cx {
+        if !outside[k] {
+            out[k] = 1;
+        }
+    }
     numpy::ndarray::Array2::from_shape_vec((cy, cx), out).unwrap().into_pyarray(py)
 }
 

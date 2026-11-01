@@ -52,6 +52,19 @@ class FineCellsTest(unittest.TestCase):
                         "the warp's reach covered")
         self.assertFalse((rim.astype(bool) & c.astype(bool)).any())
 
+    def test_islands_filled(self):
+        """An island of terrain cells inside a patch (not joined to the block's edge through terrain cells) is fine
+        too, however big: its corners are all holes, and it drew pale whole (between a hairpin's legs)."""
+        u = np.zeros((20, 20))
+        raw = u.copy()
+        for j in range(4, 15):                        # a ring of sharp spots round a 5 x 5 island
+            for i in range(4, 15):
+                if j in (4, 14) or i in (4, 14):
+                    u[j, i] = 4.0
+        c = np.asarray(fast._ef.fine_cells(u, raw, 1.5, 0.5, 1))
+        self.assertTrue(c[6:13, 6:13].all(), "the island filled")
+        self.assertFalse(c[0, :].any() or c[:, 0].any(), "the outside left alone")
+
     def test_rim_cover_over_the_terrain_either_split(self):
         """A rim cell's cover (fine_rim_mesh): its corners the terrain's samples lift up, its sides straight between
         them (the fine mesh's outline alike); on the upper hull (centre 0) nowhere under the terrain plus lift however

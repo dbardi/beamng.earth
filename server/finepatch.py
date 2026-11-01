@@ -32,7 +32,8 @@ EDGE_CELLS = 3              # cells at the block's edge left to the terrain (its
 RIM_LIFT_M = 0.01           # m the mesh lies over the terrain inside the rim cells (the terrain draws them, pale; 4 cm
                             # stood up at its edges, a shadow line on the road: the user, 2026-11-01)
 TIN_K = 8                   # the fine cells' heights sampled every 1 / TIN_K cell (0.25 m) for fine_tin ...
-TIN_TOL_M = 0.02            # ... put in where the triangles are this far off them
+TIN_TOL_M = 0.02            # ... put in where the triangles are this far off them (4 cm: a quarter fewer triangles, but a
+                            # cutting's face drawn in steps again, 2026-11-01)
 TIN_MAX_TRIS = 16384        # per piece (32 x 32 cells; the 1 m grid's were 8192)
 # fine_rim_mesh's centre rule: the renderer draws a terrain cell split north-west to south-east (its collision is
 # bilinear: rays at cells' quarter points, 2026-11-01): covers on the other split left white half squares, on the higher
@@ -117,7 +118,7 @@ def block_fine(frame, gen, raw, keep, cx, cy, size, out_dir, stem, aid, layers=N
     relative: earthd.terrain_msg makes them the game's paths), each cell drawn with its layer's material (the mod gives
     it the block's photo and the layer's detail texture: the terrain's look, terrain.lua)."""
     import fast
-    fast.require(124, "fine_cells")
+    fast.require(132, "fine_cells")      # (132: its islands filled)
     import cdae
     u = np.ascontiguousarray(keep["u"], np.float64)
     # (the mesh's outline and rim on the terrain's own stored heights, its height quantum's steps: up to 1.5 cm off
@@ -161,8 +162,12 @@ def block_fine(frame, gen, raw, keep, cx, cy, size, out_dir, stem, aid, layers=N
     # the fine cells: an adaptive triangulation of their ground (earthfast.fine_tin), not a grid
     ji = np.ascontiguousarray(np.c_[J, I], np.int64)
     fast.require(127, "fine_tin")
-    P, T, tcell, tpiece = fast._ef.fine_tin(x0, y0, sq, ji, heights(ji, TIN_K), ud, cells8, per, TIN_TOL_M,
-                                            TIN_MAX_TRIS)
+    import time
+    t0 = time.perf_counter()
+    zs = heights(ji, TIN_K)
+    t1 = time.perf_counter()
+    P, T, tcell, tpiece = fast._ef.fine_tin(x0, y0, sq, ji, zs, ud, cells8, per, TIN_TOL_M, TIN_MAX_TRIS)
+    t2 = time.perf_counter()
     P, T, tcell, tpiece = np.asarray(P), np.asarray(T), np.asarray(tcell), np.asarray(tpiece)
     # (RIM_LIFT_M over the terrain as the rim round it: their seam level, neither on the pale squares the rim covers)
     P = P + [0.0, 0.0, RIM_LIFT_M]
@@ -193,6 +198,7 @@ def block_fine(frame, gen, raw, keep, cx, cy, size, out_dir, stem, aid, layers=N
     # the pieces: PIECE_M squares from the block's corner (fine_tin's), the rim cells in pieces of their own, drawn
     # only (the terrain under them collides; the mesh 4 cm over it made ridges across the lanes)
     parts = []
+    t3 = time.perf_counter()
     for key in np.unique(tpiece):
         ti = np.flatnonzero(tpiece == key)
         vi, inv = np.unique(T[ti].ravel(), return_inverse=True)
@@ -214,6 +220,7 @@ def block_fine(frame, gen, raw, keep, cx, cy, size, out_dir, stem, aid, layers=N
         cdae.write(os.path.join(out_dir, name), pos, tris, uvs=uv, uvs2=uv2, tangent_uvs=uv2, material=mats,
                    normals=_normals(P[vi], tris, ud, x0, y0, sq, cells8), tri_materials=tri_layer[ti], object_name="fine")
         parts.append({"shape": name, "pos": [round(ox, 3), round(oy, 3), 0.0]} | ({"collide": False} if rimp else {}))
-    return holes, {"materials": [[material_name(b, k), surfacemod.MATERIALS[k][0]] for k in used]
+    times = {"heights": round(t1 - t0, 2), "tin": round(t2 - t1, 2), "write": round(time.perf_counter() - t3, 2)}
+    return holes, {"times": times, "tris": int(len(T)), "materials": [[material_name(b, k), surfacemod.MATERIALS[k][0]] for k in used]
                    + [[material_name(b, k) + "r", surfacemod.MATERIALS[k][0], True] for k in used], "bank": b,
                    "parts": parts, "cells": int(nfine), "rim": int(len(RJ))}
