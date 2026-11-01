@@ -438,6 +438,7 @@ end
 
 -- name -> the photo its fine material was made with (fineMaterial)
 local finePhoto = {}
+local stage    -- (fineStep's pieces made ahead: below)
 
 local function fineMaterial(name, layer, base, rim)
   local satmat = require('beamngEarth/satmat')
@@ -446,8 +447,11 @@ local function fineMaterial(name, layer, base, rim)
   -- (another photo: a material no shown piece uses (another bank than the shown block's: finepatch.bank) is made
   -- again, its textures from the engine's cache; reloading one re-read every texture from disk, the detail maps' PNGs
   -- too: ~200 ms a material, 2-4 s a block swap on the Stelvio, 2026-11-01. One in use is reloaded)
+  -- (in use: the shown block's bank, or the staged one's once it has pieces; deleting a Material a piece draws with
+  -- crashed the game, 2026-11-01: a staged block's photo replaced by its full one before its swap)
   local bank = tonumber(tostring(name):match('^bngEarthFine(%d+)_'))
-  if m and bank ~= M.fine.bank then
+  local staged = stage and stage.fine and stage.fine.bank == bank and next(stage.ids) ~= nil
+  if m and bank ~= M.fine.bank and not staged then
     m:delete()
     m = nil
   end
@@ -580,7 +584,7 @@ end
 
 -- The pieces of the next block, made a few a frame before its swap (fineStep: each new shape ~2 ms to load; all at
 -- the swap held its frame 140 ms on the Stelvio, 2026-11-01): { key (its .ter), fine, ids {part index: id}, next }.
-local stage = nil
+stage = nil      -- (declared before fineMaterial, which asks whether the staged pieces use a bank)
 M.FINE_STEP_MS = 4
 M.FINE_STAGE_DROP_M = 4
 

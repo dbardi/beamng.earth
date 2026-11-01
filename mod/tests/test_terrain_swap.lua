@@ -132,8 +132,14 @@ T.check(#staged == 2 and not staged[1].hidden and staged[1].fields.collisionType
   and math.abs(z(staged[1]) + terrain.FINE_STAGE_DROP_M) < 1e-9, 'made ahead: drawn under its place, not colliding')
 T.check(scenetree.findObject('bngEarthFine1_4') ~= nil, 'its material made with the block photo')
 T.check(terrain.fineReady('/t/f1.ter', fine) and not terrain.fineReady('/t/other.ter', fine), 'ready: its pieces all made ahead')
-T.check(terrain.swap('/t/f1.ter', 2, 512, 256, 0, 0, { materials = otherMats }, '/t/f1_base.png', 512, fine), 'swapped')
+-- (its photo replaced before the swap: the staged pieces' Material is kept and changed, never deleted under them;
+-- deleting it crashed the game, 2026-11-01)
+local matBefore = scenetree.findObject('bngEarthFine1_4')
+
+T.check(terrain.swap('/t/f1.ter', 2, 512, 256, 0, 0, { materials = otherMats }, '/t/f1_base_full.png', 512, fine), 'swapped')
 T.check(type(terrain.fineReady) == 'function', 'fineReady still a function after a swap (its timing stat is fineStaged)')
+T.check(scenetree.findObject('bngEarthFine1_4') == matBefore and not matBefore.deleted,
+  'the staged pieces\' material kept through a new photo')
 T.check((calls.createObject_TSStatic or 0) == made0 + 2, 'the swap makes no piece again')
 local cols = {}
 for _, o in ipairs(staged) do
