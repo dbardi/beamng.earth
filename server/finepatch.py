@@ -34,6 +34,8 @@ RIM_LIFT_M = 0.01           # m the mesh lies over the terrain inside the rim ce
 TIN_K = 8                   # the fine cells' heights sampled every 1 / TIN_K cell (0.25 m) for fine_tin ...
 TIN_TOL_M = 0.02            # ... put in where the triangles are this far off them (4 cm: a quarter fewer triangles, but a
                             # cutting's face drawn in steps again, 2026-11-01)
+FILTER_R = 5                # samples (1 / TIN_K cell): ridges and notches narrower than 2 FILTER_R + 1 (2.75 m) levelled
+                            # (3: cones of a fin left on a pass road's shoulder)
 TIN_MAX_TRIS = 16384        # per piece (32 x 32 cells; the 1 m grid's were 8192)
 # fine_rim_mesh's centre rule: the renderer draws a terrain cell split north-west to south-east (its collision is
 # bilinear: rays at cells' quarter points, 2026-11-01): covers on the other split left white half squares, on the higher
@@ -166,10 +168,11 @@ def block_fine(frame, gen, raw, keep, cx, cy, size, out_dir, stem, aid, layers=N
 
     # the fine cells: an adaptive triangulation of their ground (earthfast.fine_tin), not a grid
     ji = np.ascontiguousarray(np.c_[J, I], np.int64)
-    fast.require(127, "fine_tin")
+    fast.require(136, "fine_tin")         # (136: its inner corners its own heights)
     import time
     t0 = time.perf_counter()
-    zs = heights(ji, TIN_K)
+    fast.require(135, "fine_filter")
+    zs = np.asarray(fast._ef.fine_filter(ji, heights(ji, TIN_K), FILTER_R))
     t1 = time.perf_counter()
     P, T, tcell, tpiece = fast._ef.fine_tin(x0, y0, sq, ji, zs, ud, cells8, per, TIN_TOL_M, TIN_MAX_TRIS)
     t2 = time.perf_counter()

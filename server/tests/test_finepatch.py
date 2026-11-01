@@ -187,6 +187,29 @@ class FineTinTest(unittest.TestCase):
         self.assertLess(float(np.max(err)), 0.20)
 
 
+class FineFilterTest(unittest.TestCase):
+    def test_slivers_levelled_shapes_kept(self):
+        """earthfast.fine_filter: a fin 0.75 m wide standing 1.4 m over a flat strip (grading's sliver between two
+        cores: spikes in the fine mesh, 2026-11-01) is levelled; a flat road, a 1:1 slope, its crest and a 3 m wall's
+        step come through as they are."""
+        k, sq = 8, 2.0
+        J, I = np.mgrid[0:20, 0:20]
+        ji = np.ascontiguousarray(np.c_[J.ravel(), I.ravel()], np.int64)
+        pts = np.asarray(fast._ef.fine_points(0.0, 0.0, sq, k, ji))
+        x = pts[:, 0]
+
+        def ground(x):
+            z = np.where(x < 10.0, 0.0, np.where(x < 16.0, x - 10.0, 6.0))         # road, slope, crest, top
+            z = np.where(x >= 30.0, 9.0, z)                                      # a wall's step
+            return z
+        fin = (x > 4.0) & (x < 4.75)
+        z = ground(x) + np.where(fin, 1.4, 0.0)
+        out = np.asarray(fast._ef.fine_filter(ji, np.ascontiguousarray(z.reshape(len(ji), -1)), 3)).ravel()
+        self.assertLess(float(np.abs(out[fin]).max()), 0.01, "the fin levelled")
+        inner = (x > 1.0) & (x < 39.0)                  # (the block's edge: half a window of no ground)
+        self.assertLess(float(np.abs(out - ground(x))[inner & ~fin].max()), 1e-3, "the rest as it was")
+
+
 if __name__ == "__main__":
     unittest.main()
 

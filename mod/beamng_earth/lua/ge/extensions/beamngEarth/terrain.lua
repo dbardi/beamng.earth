@@ -436,9 +436,22 @@ local function strengthAt(v, dist, default)
   return nearS + (farS - nearS) * mid
 end
 
+-- name -> the photo its fine material was made with (fineMaterial)
+local finePhoto = {}
+
 local function fineMaterial(name, layer, base, rim)
   local satmat = require('beamngEarth/satmat')
   local m = scenetree.findObject(name)
+  if m and finePhoto[name] == (base or false) then return m end
+  -- (another photo: a material no shown piece uses (another bank than the shown block's: finepatch.bank) is made
+  -- again, its textures from the engine's cache; reloading one re-read every texture from disk, the detail maps' PNGs
+  -- too: ~200 ms a material, 2-4 s a block swap on the Stelvio, 2026-11-01. One in use is reloaded)
+  local bank = tonumber(tostring(name):match('^bngEarthFine(%d+)_'))
+  if m and bank ~= M.fine.bank then
+    m:delete()
+    m = nil
+  end
+  finePhoto[name] = base or false
   local fresh = not m
   if fresh then
     m = createObject('Material')
