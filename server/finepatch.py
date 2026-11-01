@@ -187,11 +187,12 @@ def block_fine(frame, gen, raw, keep, cx, cy, size, out_dir, stem, aid, layers=N
         RP, RT = fast._ef.fine_rim_mesh(x0, y0, sq, rji, ud, RIM_LIFT_M, RIM_CENTRE)
         RP, RT = np.asarray(RP), np.asarray(RT)
         rcell = nfine + np.repeat(np.arange(len(RJ)), 4)          # (fine_rim_mesh: 4 triangles a cell)
-        rpiece = (RJ // per)[rcell - nfine] * 100000 + (RI // per)[rcell - nfine] + 10 ** 10
+        rpiece = (RJ // per)[rcell - nfine] * 100000 + (RI // per)[rcell - nfine]
         T = np.r_[T, RT + len(P)]
         P = np.r_[P, RP]
         tcell = np.r_[tcell, rcell]
         tpiece = np.r_[tpiece, rpiece]
+    is_rim_tri = tcell >= nfine
     J, I = np.r_[J, RJ], np.r_[I, RI]
     extent = size * sq                                  # (the block's photo covers it from its south-west corner)
     import surface as surfacemod
@@ -203,17 +204,16 @@ def block_fine(frame, gen, raw, keep, cx, cy, size, out_dir, stem, aid, layers=N
     b = bank(cx, cy, size)
     # (the rim's own materials, casting no shadow: material_name + "r")
     mats = [material_name(b, k) for k in used] + [material_name(b, k) + "r" for k in used]
-    tri_layer = np.searchsorted(used, lay[tcell]) + np.where(tpiece >= 10 ** 10, len(used), 0)
-    # the pieces: PIECE_M squares from the block's corner (fine_tin's), the rim cells in pieces of their own, drawn
-    # only (the terrain under them collides; the mesh 4 cm over it made ridges across the lanes)
+    tri_layer = np.searchsorted(used, lay[tcell]) + np.where(is_rim_tri, len(used), 0)
+    # the pieces: PIECE_M squares from the block's corner (fine_tin's), the rim cells' covers in the same pieces (their
+    # own materials, casting no shadow): a new piece's making costs ~10 ms whatever its size, and pieces of their own
+    # doubled that (spawn stutter, the user 2026-11-01). They collide too, RIM_LIFT_M over the terrain: too little to feel
     parts = []
     t3 = time.perf_counter()
     for key in np.unique(tpiece):
         ti = np.flatnonzero(tpiece == key)
         vi, inv = np.unique(T[ti].ravel(), return_inverse=True)
-        rimp = key >= 10 ** 10
-        kk = int(key % 10 ** 10)
-        pj, pi = kk // 100000, kk % 100000
+        pj, pi = int(key) // 100000, int(key) % 100000
         ox, oy = x0 + pi * PIECE_M, y0 + pj * PIECE_M
         pos = P[vi] - [ox, oy, 0.0]
         # the terrain's own texture coordinates: its samples' (block-local, half a sample on: the engine's terrain
@@ -223,12 +223,12 @@ def block_fine(frame, gen, raw, keep, cx, cy, size, out_dir, stem, aid, layers=N
         uv = np.c_[sx * sq / extent, sy * sq / extent]
         uv2 = np.c_[sx * sq / DETAIL_M, 1.0 - sy * sq / DETAIL_M]
         tris = inv.reshape(-1, 3)
-        name = f"{stem}_{pi}_{pj}{'r' if rimp else ''}.cdae"
+        name = f"{stem}_{pi}_{pj}.cdae"
         # (tangents along the detail's coordinates: its normal map's relief lit as the terrain's; along the photo's,
         # whose v runs the other way, it was lit from the wrong side)
         cdae.write(os.path.join(out_dir, name), pos, tris, uvs=uv, uvs2=uv2, tangent_uvs=uv2, material=mats,
                    normals=_normals(P[vi], tris, ud, x0, y0, sq, cells8), tri_materials=tri_layer[ti], object_name="fine")
-        parts.append({"shape": name, "pos": [round(ox, 3), round(oy, 3), 0.0]} | ({"collide": False} if rimp else {}))
+        parts.append({"shape": name, "pos": [round(ox, 3), round(oy, 3), 0.0]})
     times = {"heights": round(t1 - t0, 2), "tin": round(t2 - t1, 2), "write": round(time.perf_counter() - t3, 2)}
     return holes, {"times": times, "tris": int(len(T)), "materials": [[material_name(b, k), surfacemod.MATERIALS[k][0]] for k in used]
                    + [[material_name(b, k) + "r", surfacemod.MATERIALS[k][0], True] for k in used], "bank": b,
