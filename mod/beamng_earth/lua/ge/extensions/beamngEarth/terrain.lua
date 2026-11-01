@@ -377,9 +377,27 @@ end
 M.fine = { ids = {}, fine = nil, bank = nil }
 local fineMade = 0
 
-local function fineTexture(m, base)
+-- The game's packed copy of the block photo (its terrain texture cache, sRGB BC7, written by the server:
+-- terraincache.base_entry; named by xxh64 of the photo's path three times and the layers' ao map's), or nil. The PBR
+-- material reads the photo's PNG as linear colour (the pieces washed out white, 2026-11-01); this file it decodes as the
+-- terrain does.
+local function fineDds(base, layer)
+  if type(base) ~= 'string' then return nil end
+  local tm = type(layer) == 'string' and scenetree.findObject(layer) or nil
+  local ok, ao = pcall(function() return tm:getField('aoBaseTex', 0) end)
+  if not ok or type(ao) ~= 'string' or ao == '' then return nil end
+  local p = '/temp/art/terrainmaterialcache/' .. require('beamngEarth/xxh64').hex(base .. base .. base .. ao) .. '.dds'
+  return FS:fileExists(p) and p or nil
+end
+
+local function fineTexture(m, base, layer)
   local satmat = require('beamngEarth/satmat')
-  if type(base) == 'string' and FS:fileExists(base) then
+  local dds = fineDds(base, layer)
+  if dds then
+    m:setField('version', 0, '1.5')
+    satmat._setTexture(m, dds, false)
+  elseif type(base) == 'string' and FS:fileExists(base) then
+    m:setField('version', 0, '1')      -- (the PNG: the legacy material, which reads it as the terrain does)
     satmat._setTexture(m, base, false)
   else
     m:setField('diffuseColor', 0, satmat.FALLBACK_COLOR)
@@ -422,7 +440,9 @@ local function fineMaterial(name, layer, base)
     m = createObject('Material')
     m:setField('mapTo', 0, name)
   end
-  fineTexture(m, base)
+  -- (the PBR material, as the terrain's, with the photo's sRGB copy: the legacy one (version 1) adds its detail map at
+  -- full strength and in gamma space, the pieces a shade darker and grainier than the terrain beside them, 2026-11-01)
+  fineTexture(m, base, layer)
   if fresh then
     for _, f in ipairs(satmat.FIELDS) do m:setField(f[1], 0, f[2]) end
     local tm = type(layer) == 'string' and scenetree.findObject(layer) or nil
