@@ -540,6 +540,13 @@ local pieceSlot = {}
 local function pooled() return require('beamngEarth/roads') end
 local function partSlot(p) return p.slot and pooled().pooledSlot(p.shape, p.slot) or nil end
 
+-- A shown piece's collision: its own collision meshes ("Collision Mesh": the server's split into small meshes, built
+-- fast on Windows), else its drawn mesh; none for a rim piece (collide false)
+local function pieceCollision(p)
+  if p.collide == false then return 'None' end
+  return p.collision == 'mesh' and 'Collision Mesh' or 'Visible Mesh Final'
+end
+
 local function finePiece(p, staged)
   if type(p.shape) ~= 'string' or type(p.pos) ~= 'table' or not FS:fileExists(p.shape) then
     pooled().pooledRelease(partSlot(p), nil)
@@ -549,7 +556,7 @@ local function finePiece(p, staged)
   o:setField('shapeName', 0, p.shape)
   -- (made ahead, staged: hidden and not colliding until its block goes in: its ground differs a little from the block
   -- in place over the same cells)
-  o:setField('collisionType', 0, (staged or p.collide == false) and 'None' or 'Visible Mesh Final')
+  o:setField('collisionType', 0, staged and 'None' or pieceCollision(p))
   o:setField('decalType', 0, 'Visible Mesh')
   o:setField('dynamic', 0, 'true')
   o.canSave = false
@@ -642,7 +649,7 @@ local function fineMake(fine, base, terPath)
     if o then
       o.hidden = false
       o:setPosition(vec3(p.pos[1], p.pos[2], p.pos[3]))
-      if p.collide ~= false then o:setField('collisionType', 0, 'Visible Mesh Final') end
+      if p.collide ~= false then o:setField('collisionType', 0, pieceCollision(p)) end
       ids[#ids + 1] = id
       st_.ids[i] = nil
       -- (this message's own slot for it unused: the staged piece came from the earlier message's)

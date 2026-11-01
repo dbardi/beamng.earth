@@ -26,7 +26,9 @@ GRADED_DZ_M = 0.5           # ... where the grading moved the ground this much a
 GROW = 2                    # cells round each sharp one drawn finely too (a slope's foot and top, the lanes beside; 1:
                             # the outline on a cutting's crest, its straight lattice edges drew 2 m stairs, 2026-11-01)
 K = 2                       # quads per cell side: 1 m (4 at 0.5 m: 4x the triangles, no visible gain)
-PIECE_M = 64.0              # m: a piece's square (at most 32 x 32 cells, 8192 triangles)
+# m: a piece's square. Each piece costs ~20-30 ms to make (its materials, one per surface layer in it): 128 m pieces
+# made a Stelvio block in 32 (0.9 s, spread a frame each) where 64 m ones took 93 (1.9 s), 2026-11-01
+PIECE_M = float(os.environ.get("BNE_FINE_PIECE_M", "128"))
 MAX_CELLS = 40000           # per block (a mountain's worth); more: the steepest kept
 EDGE_CELLS = 3              # cells at the block's edge left to the terrain (its edge holes, the next block's seam)
 RIM_LIFT_M = 0.01           # m the mesh lies over the terrain inside the rim cells (the terrain draws them, pale; 4 cm
@@ -36,7 +38,10 @@ TIN_TOL_M = 0.02            # ... put in where the triangles are this far off th
                             # cutting's face drawn in steps again, 2026-11-01)
 FILTER_R = 5                # samples (1 / TIN_K cell): ridges and notches narrower than 2 FILTER_R + 1 (2.75 m) levelled
                             # (3: cones of a fin left on a pass road's shoulder)
-TIN_MAX_TRIS = 16384        # per piece (32 x 32 cells; the 1 m grid's were 8192)
+# m: a piece's collision in meshes of this square (_collisions). Windows, its static collision rebuilt with a Stelvio
+# block's fine ground (545k tris): one mesh a 64 m piece 1.0-1.1 s, 16 m 0.19 s, 8 m 0.10 s, 4 m 0.07 s (2026-11-01)
+COL_CHUNK_M = float(os.environ.get("BNE_FINE_COL_M", "8"))
+TIN_MAX_TRIS = int(16384 * (PIECE_M / 64.0) ** 2)    # per piece (16384 for 32 x 32 cells; the 1 m grid's were 8192)
 # fine_rim_mesh's centre rule: the renderer draws a terrain cell split north-west to south-east (its collision is
 # bilinear: rays at cells' quarter points, 2026-11-01): covers on the other split left white half squares, on the higher
 # diagonal they bulged up steep cells as pale stairs
@@ -84,6 +89,23 @@ def _normals(P, T, u, x0, y0, sq, cells):
         n = np.c_[(u[cj, ci - 1] - u[cj, ci + 1]) / (2 * sq), (u[cj - 1, ci] - u[cj + 1, ci]) / (2 * sq), np.ones(len(k))]
         N[k] = n / np.linalg.norm(n, axis=1)[:, None]
     return N
+
+
+def _collisions(pos, tris, tri_mat, keep):
+    """A piece's collision (its triangles `keep`: not the rim's covers, the terrain under them collides) as meshes of
+    COL_CHUNK_M squares (by triangle centroid, piece-local), for cdae.encode collisions=: Windows builds a collision mesh
+    in time ~quadratic in its triangles (collision-engine-facts), a 64 m piece's 15k in one froze its swaps."""
+    k = np.flatnonzero(keep)
+    if not len(k):
+        return None
+    cen = pos[tris[k]].mean(1)
+    key = np.floor(cen[:, 0] / COL_CHUNK_M).astype(np.int64) * 1000 + np.floor(cen[:, 1] / COL_CHUNK_M).astype(np.int64)
+    out = []
+    for c in np.unique(key):
+        sel = k[key == c]
+        vi, inv = np.unique(tris[sel].ravel(), return_inverse=True)
+        out.append((pos[vi], inv.reshape(-1, 3), tri_mat[sel]))
+    return out
 
 
 def _cell_layers(layers, J, I, n, fallback):
@@ -202,9 +224,10 @@ def block_fine(frame, gen, raw, keep, cx, cy, size, out_dir, stem, aid, layers=N
         lay = np.full(len(J), surfacemod.DIRT, np.int64)
     used = sorted(set(int(v) for v in np.unique(lay)))
     b = bank(cx, cy, size)
-    # (the rim's own materials, casting no shadow: material_name + "r")
-    mats = [material_name(b, k) for k in used] + [material_name(b, k) + "r" for k in used]
-    tri_layer = np.searchsorted(used, lay[tcell]) + np.where(is_rim_tri, len(used), 0)
+    # (the rim's covers with the same materials: each material a piece lists costs its making ~10 ms, and covers
+    # 1 cm over the terrain cast no shadow to see)
+    mats = [material_name(b, k) for k in used]
+    tri_layer = np.searchsorted(used, lay[tcell])
     # the pieces: PIECE_M squares from the block's corner (fine_tin's), the rim cells' covers in the same pieces (their
     # own materials, casting no shadow): a new piece's making costs ~10 ms whatever its size, and pieces of their own
     # doubled that (spawn stutter, the user 2026-11-01). They collide too, RIM_LIFT_M over the terrain: too little to feel
@@ -227,9 +250,9 @@ def block_fine(frame, gen, raw, keep, cx, cy, size, out_dir, stem, aid, layers=N
         # (tangents along the detail's coordinates: its normal map's relief lit as the terrain's; along the photo's,
         # whose v runs the other way, it was lit from the wrong side)
         cdae.write(os.path.join(out_dir, name), pos, tris, uvs=uv, uvs2=uv2, tangent_uvs=uv2, material=mats,
-                   normals=_normals(P[vi], tris, ud, x0, y0, sq, cells8), tri_materials=tri_layer[ti], object_name="fine")
-        parts.append({"shape": name, "pos": [round(ox, 3), round(oy, 3), 0.0]})
+                   normals=_normals(P[vi], tris, ud, x0, y0, sq, cells8), tri_materials=tri_layer[ti], object_name="fine",
+                   collisions=_collisions(pos, tris, tri_layer[ti], ~is_rim_tri[ti]) if COL_CHUNK_M > 0 else None)
+        parts.append({"shape": name, "pos": [round(ox, 3), round(oy, 3), 0.0]} | ({"collision": "mesh"} if COL_CHUNK_M > 0 else {}))
     times = {"heights": round(t1 - t0, 2), "tin": round(t2 - t1, 2), "write": round(time.perf_counter() - t3, 2)}
-    return holes, {"times": times, "tris": int(len(T)), "materials": [[material_name(b, k), surfacemod.MATERIALS[k][0]] for k in used]
-                   + [[material_name(b, k) + "r", surfacemod.MATERIALS[k][0], True] for k in used], "bank": b,
+    return holes, {"times": times, "tris": int(len(T)), "materials": [[material_name(b, k), surfacemod.MATERIALS[k][0]] for k in used], "bank": b,
                    "parts": parts, "cells": int(nfine), "rim": int(len(RJ))}

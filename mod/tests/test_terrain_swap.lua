@@ -116,7 +116,7 @@ terrain.REBIND_AFTER_SWAP = false
 local roads = require('beamngEarth/roads')
 roads.setSession('s1')
 local fine = { bank = 1, materials = { { 'bngEarthFine1_4', 'bngEarthGroundRock' } },
-  parts = { { shape = '/temp/beamngEarth/s1/slot_00007.cdae', pos = { 0, 0, 0 }, slot = 3 },
+  parts = { { shape = '/temp/beamngEarth/s1/slot_00007.cdae', pos = { 0, 0, 0 }, slot = 3, collision = 'mesh' },
             { shape = '/temp/beamngEarth/s1/b_fine_1_0r.cdae', pos = { 64, 0, 0 }, collide = false } } }
 local made0 = calls.createObject_TSStatic or 0
 terrain.finePrepare({ ter = '/t/f1.ter', fine = fine, base = '/t/f1_base.png' })
@@ -146,7 +146,7 @@ for _, o in ipairs(staged) do
   cols[o.fields.shapeName] = o.fields.collisionType
   T.check(not o.hidden and math.abs(z(o)) < 1e-9, 'shown, at its place')
 end
-T.check(cols['/temp/beamngEarth/s1/slot_00007.cdae'] == 'Visible Mesh Final'
+T.check(cols['/temp/beamngEarth/s1/slot_00007.cdae'] == 'Collision Mesh'
   and cols['/temp/beamngEarth/s1/b_fine_1_0r.cdae'] == 'None', 'colliding but for the rim piece')
 T.check(terrain.fineStatus().pieces == 2 and terrain.fineStatus().bank == 1, 'the block\'s pieces')
 -- the next block without fine ground: the pieces go, the pooled one's slot is reported gone

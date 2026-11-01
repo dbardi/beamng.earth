@@ -123,12 +123,21 @@ class BlockFineTest(unittest.TestCase):
             self.assertIsNotNone(fine)
             self.assertTrue(holes.any())
             self.assertTrue(fine["parts"])
+            import cdae
             for p in fine["parts"]:
                 self.assertTrue(os.path.getsize(os.path.join(d, p["shape"])) > 0)
+                # (its collision in meshes of COL_CHUNK_M beside the drawn one: Windows' collision build per mesh)
+                self.assertEqual(p.get("collision"), "mesh")
+                s = cdae.read(os.path.join(d, p["shape"]))
+                cols = [n for n in s["names"] if n.startswith("Colmesh")]
+                self.assertTrue(cols, "collision meshes")
+                for m in s["meshes"][3::2]:      # (drawn, null; then each collision object's null and its own)
+                    v = cdae.mesh_arrays(m)["verts"]
+                    span = v.max(0) - v.min(0)
+                    self.assertLessEqual(max(span[0], span[1]), finepatch.COL_CHUNK_M + 2 * 2.0 + 1e-6)
             b = finepatch.bank(0.0, 0.0, size)
             name = finepatch.material_name(b, __import__('surface').DIRT)
-            # (and the rim's own, casting no shadow)
-            self.assertEqual(fine["materials"], [[name, "beamngEarthDirt"], [name + "r", "beamngEarthDirt", True]])
+            self.assertEqual(fine["materials"], [[name, "beamngEarthDirt"]])
         flat = heightmap.surface_u(frame, raw, xs, ys)
         with tempfile.TemporaryDirectory() as d:
             holes, fine = finepatch.block_fine(frame, raw, raw, {"u": flat}, 0.0, 0.0, size, d, "b_fine", 1)
