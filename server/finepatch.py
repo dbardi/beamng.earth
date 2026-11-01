@@ -53,6 +53,30 @@ def apply(frame, gen, raw, keep, cx, cy, size, out_dir, stem, aid, idx, info):
     return idx
 
 
+def _normals(P, T, u, x0, y0, sq, cells):
+    """Vertex normals of a piece (points P (n, 3), triangles T): its faces' (cdae: as the engine derives them), but a
+    lattice sample on the fine cells' outline takes the terrain's own there (its heightmap's central difference, the
+    engine's terrain shader) so the light goes on across the seam."""
+    import cdae
+    N = cdae.face_normal_sum(P, T)
+    gx, gy = (P[:, 0] - x0) / sq, (P[:, 1] - y0) / sq
+    i, j = np.rint(gx).astype(np.int64), np.rint(gy).astype(np.int64)
+    ny, nx = u.shape
+    on = (np.abs(gx - i) < 1e-6) & (np.abs(gy - j) < 1e-6) & (i >= 1) & (j >= 1) & (i < nx - 1) & (j < ny - 1)
+    k = np.flatnonzero(on)
+    if len(k):
+        ci, cj = i[k], j[k]
+        cy, cx = cells.shape
+        def fine(a, b):
+            a, b = np.clip(a, 0, cy - 1), np.clip(b, 0, cx - 1)
+            return cells[a, b] != 0
+        rim = ~(fine(cj, ci) & fine(cj - 1, ci) & fine(cj, ci - 1) & fine(cj - 1, ci - 1))
+        k, ci, cj = k[rim], ci[rim], cj[rim]
+        n = np.c_[(u[cj, ci - 1] - u[cj, ci + 1]) / (2 * sq), (u[cj - 1, ci] - u[cj + 1, ci]) / (2 * sq), np.ones(len(k))]
+        N[k] = n / np.linalg.norm(n, axis=1)[:, None]
+    return N
+
+
 def material_name(bank_, layer):
     """The Material of a bank's (bank) pieces of surface layer `layer` (surface.MATERIALS index): the mod makes it with the
     block's photo and that layer's detail texture (terrain.lua)."""
@@ -155,11 +179,16 @@ def block_fine(frame, gen, raw, keep, cx, cy, size, out_dir, stem, aid, layers=N
         pj, pi = kk // 100000, kk % 100000
         ox, oy = x0 + pi * PIECE_M, y0 + pj * PIECE_M
         pos = P[vi] - [ox, oy, 0.0]
-        uv = np.c_[(P[vi, 0] - x0) / extent, (P[vi, 1] - y0) / extent]
-        uv2 = pos[:, :2] / DETAIL_M                     # (world-locked: piece corners are on the 2 m lattice)
+        # the terrain's own texture coordinates: its samples' (block-local, half a sample on: the engine's terrain
+        # shader), the photo's as its base texture (v down), the detail's as its layers' detail textures (v up, as
+        # this format stores it flipped): the roads in the photo and the ground's grain go on across the seam
+        sx, sy = (P[vi, 0] - x0 + sq / 2) / sq, (P[vi, 1] - y0 + sq / 2) / sq
+        uv = np.c_[sx * sq / extent, sy * sq / extent]
+        uv2 = np.c_[sx * sq / DETAIL_M, 1.0 - sy * sq / DETAIL_M]
+        tris = inv.reshape(-1, 3)
         name = f"{stem}_{pi}_{pj}{'r' if rimp else ''}.cdae"
-        cdae.write(os.path.join(out_dir, name), pos, inv.reshape(-1, 3), uvs=uv, uvs2=uv2, material=mats,
-                   tri_materials=tri_layer[ti], object_name="fine")
+        cdae.write(os.path.join(out_dir, name), pos, tris, uvs=uv, uvs2=uv2, material=mats,
+                   normals=_normals(P[vi], tris, u, x0, y0, sq, cells8), tri_materials=tri_layer[ti], object_name="fine")
         parts.append({"shape": name, "pos": [round(ox, 3), round(oy, 3), 0.0]} | ({"collide": False} if rimp else {}))
     return holes, {"materials": [[material_name(b, k), surfacemod.MATERIALS[k][0]] for k in used], "bank": b,
                    "parts": parts, "cells": int(nfine), "rim": int(len(RJ))}

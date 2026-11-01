@@ -386,9 +386,34 @@ local function fineTexture(m, base)
   end
 end
 
--- A fine material: the block's photo (colour map) with its surface layer's detail texture over it (layer: the
--- TerrainMaterial whose detail textures the terrain draws there, its size in samples: metres / 2), the terrain's look;
--- no layer: satmat's ground grain. The pieces' UV1 is world metres / 2 (finepatch.DETAIL_M).
+-- A fine material: the terrain's look (the engine's terrain shader, material/shadergen/terrainMat + terrain.h): the block's
+-- photo plus its surface layer's detail colour (2 x detail - 1, at the layer's near strength: the mesh shader adds
+-- its detail alike), the layer's detail normal, roughness and ao over the level's flat base maps, on the same
+-- texture coordinates (the server's UV1: block-local metres / 2 from half a sample on). The user, 2026-11-01: "make the
+-- texture of the finer mesh perfectly blend in and match with the normal terrain" (the satmat grain and a fixed
+-- normal strength drew it a shade off, in squares). No layer: satmat's ground grain. Not matched: the macro textures
+-- (subtle, 64 m) and the detail's fade with distance (the mesh's strengths are the terrain's at FINE_LOOK_M).
+M.FINE_ROUGHNESS_BASE = TERRAIN_DIR .. 'bngEarth_base_r.png'
+M.FINE_AO_BASE = TERRAIN_DIR .. 'bngEarth_base_ao.png'
+-- (a strength pair "near far" as the terrain shader takes it at FINE_LOOK_M from the camera with the layer's
+-- detailDistances "a b c d": near up to b, toward far by c, far from d: terrain.h's calculateStrenth)
+M.FINE_LOOK_M = 20
+local function nums(v)
+  local o = {}
+  for x in tostring(v or ''):gmatch('[%d%.%-]+') do o[#o + 1] = tonumber(x) end
+  return o
+end
+local function strengthAt(v, dist, default)
+  local s, d = nums(v), nums(dist)
+  if not s[1] then return default end
+  local nearS, farS = s[1], s[2] or s[1]
+  if #d < 4 then return nearS end
+  local x = M.FINE_LOOK_M
+  local sat = function(a) return math.max(0, math.min(1, a)) end
+  local mid = d[3] > d[2] and sat((x - d[2]) / (d[3] - d[2])) or 1
+  return nearS + (farS - nearS) * mid
+end
+
 local function fineMaterial(name, layer, base)
   local satmat = require('beamngEarth/satmat')
   local m = scenetree.findObject(name)
@@ -400,18 +425,40 @@ local function fineMaterial(name, layer, base)
   fineTexture(m, base)
   if fresh then
     for _, f in ipairs(satmat.FIELDS) do m:setField(f[1], 0, f[2]) end
-    -- (the colour: satmat's neutral ground grain, mean 0.5 grey; the layers' own detail textures are lighter than
-    -- that and made the pieces pale grey blocks on the asphalt, 2026-11-01. Their relief: the layer's normal detail)
-    m:setField('detailMap', 0, satmat.DETAIL_MAP)
-    for _, f in ipairs(satmat.DETAIL_FIELDS) do m:setField(f[1], 0, f[2]) end
     local tm = type(layer) == 'string' and scenetree.findObject(layer) or nil
-    local ntex = tm and tm:getField('normalDetailTex', 0) or ''
-    if ntex ~= '' then
-      local size = tonumber(tm:getField('normalDetailTexSize', 0)) or 1
-      m:setField('detailNormalMap', 0, ntex)
-      m:setField('normalDetailMapUseUV', 0, '1')
-      m:setField('detailNormalMapStrength', 0, '0.6')
-      m:setField('detailScale', 0, string.format('%.4f %.4f', 1 / math.max(size, 0.25), 1 / math.max(size, 0.25)))
+    local get = function(f) local ok, v = pcall(function() return tm:getField(f, 0) end) return ok and v or '' end
+    local btex = tm and get('baseColorDetailTex') or ''
+    if btex ~= '' then
+      -- (detail sizes in samples: one repeat every size x square metres; UV1 is metres / 2)
+      local size = math.max(tonumber(get('baseColorDetailTexSize')) or 1, 0.25) * M.square
+      local sc = string.format('%.5f %.5f', 2 / size, 2 / size)
+      m:setField('detailMap', 0, btex)
+      m:setField('detailBaseColorMapStrength', 0, tostring(strengthAt(get('baseColorDetailStrength'), get('detailDistances'), 0.25)))
+      m:setField('detailMapUseUV', 0, '1')
+      m:setField('detailScale', 0, sc)
+      local ntex = get('normalDetailTex')
+      if ntex ~= '' then
+        m:setField('detailNormalMap', 0, ntex)
+        m:setField('normalDetailMapUseUV', 0, '1')
+        m:setField('detailNormalMapStrength', 0, tostring(strengthAt(get('normalDetailStrength'), get('detailDistances'), 1)))
+      end
+      local rtex = get('roughnessDetailTex')
+      m:setField('roughnessFactor', 0, '1')
+      m:setField('roughnessMap', 0, M.FINE_ROUGHNESS_BASE)
+      if rtex ~= '' then
+        m:setField('roughnessDetailMap', 0, rtex)
+        m:setField('detailRoughnessMapStrength', 0, tostring(strengthAt(get('roughnessDetailStrength'), get('detailDistances'), 1)))
+      end
+      local atex = get('aoDetailTex')
+      m:setField('ambientOcclusionMap', 0, M.FINE_AO_BASE)
+      if atex ~= '' then
+        m:setField('ambientOcclusionDetailMap', 0, atex)
+        m:setField('detailAoMapStrength', 0, tostring(strengthAt(get('aoDetailStrength'), get('detailDistances'), 0.8)))
+      end
+    else
+      -- (satmat's neutral ground grain, mean 0.5 grey)
+      m:setField('detailMap', 0, satmat.DETAIL_MAP)
+      for _, f in ipairs(satmat.DETAIL_FIELDS) do m:setField(f[1], 0, f[2]) end
     end
     m.canSave = false
     m:registerObject(name)
