@@ -10,7 +10,7 @@ import earthd  # noqa: E402
 
 class PrefetchChainTest(unittest.TestCase):
     def test_chain(self):
-        rule = earthd.FOLLOW_RULES[512]
+        rule = earthd.FOLLOW_RULES[1024.0]                 # the 1 km block (by its width in metres)
         v = 223.0                                   # 500 mph, west
         first = earthd.predict_request(0.0, 0.0, -v, 0.0, 0.0, 0.0, rule)
         chain = earthd.predict_chain(0.0, 0.0, -v, 0.0, 0.0, 0.0, rule, 4)

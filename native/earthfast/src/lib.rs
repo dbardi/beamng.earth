@@ -1,7 +1,6 @@
 //! Geometry kernels for the world server (server/fast.py wraps them, with the Python versions as the fallback).
 //! All coordinates are metres in the anchor's local frame, f64.
 mod gpu;
-mod finepatch;
 mod dsm;
 mod vegmask;
 mod roadgeom;
@@ -5318,13 +5317,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(decks::deck_beside, m)?)?;
     m.add_function(wrap_pyfunction!(decks::deck_end_joins, m)?)?;
     m.add_function(wrap_pyfunction!(tapers::road_tapers, m)?)?;
-    m.add_function(wrap_pyfunction!(finepatch::fine_cells, m)?)?;
-    m.add_function(wrap_pyfunction!(finepatch::fine_holes, m)?)?;
-    m.add_function(wrap_pyfunction!(finepatch::fine_rim, m)?)?;
-    m.add_function(wrap_pyfunction!(finepatch::fine_points, m)?)?;
-    m.add_function(wrap_pyfunction!(finepatch::fine_tin, m)?)?;
-    m.add_function(wrap_pyfunction!(finepatch::fine_rim_mesh, m)?)?;
-    m.add_function(wrap_pyfunction!(finepatch::fine_filter, m)?)?;
     m.add_function(wrap_pyfunction!(tapers::lane_flow, m)?)?;
     m.add_function(wrap_pyfunction!(tapers::lane_shifts, m)?)?;
     m.add_function(wrap_pyfunction!(decks::deck_gaps, m)?)?;
@@ -5334,6 +5326,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(islands::road_cycles, m)?)?;
     m.add_function(wrap_pyfunction!(ribbons::ribbon_edges, m)?)?;
     m.add_function(wrap_pyfunction!(groundpaint::mask_segments, m)?)?;
+    m.add_function(wrap_pyfunction!(groundpaint::value_noises, m)?)?;
     m.add_function(wrap_pyfunction!(groundpaint::photo_ghosts, m)?)?;
     m.add_function(wrap_pyfunction!(groundpaint::dash_pieces, m)?)?;
     m.add_function(wrap_pyfunction!(power::substation_yard, m)?)?;
@@ -5465,6 +5458,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fartex::season_img, m)?)?;
     m.add_function(wrap_pyfunction!(fartex::dds_levels, m)?)?;
     m.add_function(wrap_pyfunction!(fartex::jpeg_rgb, m)?)?;
-    m.add("VERSION", 138)?;
+    m.add("VERSION", 139)?;
     Ok(())
 }

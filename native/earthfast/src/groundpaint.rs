@@ -241,3 +241,48 @@ pub fn dash_pieces<'py>(py: Python<'py>, pts: PyReadonlyArray2<'py, f64>, dash: 
     for (i, q) in out.iter().enumerate() { for c in 0..3 { arr[[i, c]] = q[c]; } }
     (numpy::PyArray2::from_owned_array(py, arr), numpy::PyArray1::from_vec(py, starts))
 }
+
+/// surface._hash01: a lattice point's pseudo-random value in [-1, 1] (uint64 arithmetic, wrapping as numpy's).
+#[inline]
+fn noise_hash(ix: i64, iy: i64, seed: u64) -> f64 {
+    let mut h = (ix as u64).wrapping_mul(0x9E3779B185EBCA87)
+        ^ (iy as u64).wrapping_mul(0xC2B2AE3D27D4EB4F)
+        ^ seed.wrapping_mul(0x165667B19E3779F9);
+    h ^= h >> 29;
+    h = h.wrapping_mul(0xBF58476D1CE4E5B9);
+    h ^= h >> 32;
+    (h >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
+}
+
+/// surface._value_noises: smooth value noise in [-1, 1] at the points (x, y) (lattice units, flat arrays of one
+/// length) for each seed, one array per seed. The Python's arithmetic in its order (smoothstep fx * fx * (3 - 2 fx),
+/// top = (b - a) fx + a, bot = (d - c) fx + c, (bot - top) fy + top): the same values bit for bit.
+#[pyfunction]
+pub fn value_noises<'py>(py: Python<'py>, x: PyReadonlyArray1<'py, f64>, y: PyReadonlyArray1<'py, f64>,
+                         seeds: Vec<u64>) -> Vec<Bound<'py, numpy::PyArray1<f64>>> {
+    use numpy::IntoPyArray;
+    let (x, y) = (x.as_array(), y.as_array());
+    let outs: Vec<Vec<f64>> = py.allow_threads(|| {
+        let n = x.len().min(y.len());
+        let mut outs: Vec<Vec<f64>> = seeds.iter().map(|_| Vec::with_capacity(n)).collect();
+        for i in 0..n {
+            let (xi, yi) = (x[i], y[i]);
+            let (x0, y0) = (xi.floor(), yi.floor());
+            let (fx, fy) = (xi - x0, yi - y0);
+            let fx = fx * fx * (3.0 - 2.0 * fx);
+            let fy = fy * fy * (3.0 - 2.0 * fy);
+            let (ix, iy) = (x0 as i64, y0 as i64);
+            for (s, out) in seeds.iter().zip(outs.iter_mut()) {
+                let a = noise_hash(ix, iy, *s);
+                let b = noise_hash(ix + 1, iy, *s);
+                let c = noise_hash(ix, iy + 1, *s);
+                let d = noise_hash(ix + 1, iy + 1, *s);
+                let top = (b - a) * fx + a;
+                let bot = (d - c) * fx + c;
+                out.push((bot - top) * fy + top);
+            }
+        }
+        outs
+    });
+    outs.into_iter().map(|v| v.into_pyarray(py)).collect()
+}
