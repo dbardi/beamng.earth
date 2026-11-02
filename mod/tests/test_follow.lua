@@ -113,6 +113,14 @@ T.check(a == 'prepare' and cx == 384 and cy == 0, '512: past 128 m: prepare snap
 pend = { cx = 256, cy = 0, ready = true }
 T.check(d(256, 0, 40, 0, 0, 0, pend, 0, 0) == nil, '512: ready at 256 m: hold')
 T.check(d(257, 0, 40, 0, 0, 0, pend, 0, 0) == 'commit', '512: ready past 256 m: commit')
+-- above the speed where 256 m leaves the commit-time re-check less than LATENCY_S + RECHECK_SLACK_S before the
+-- RECHECK_SAFE band on a diagonal, the commit distance is 192 m
+T.near(f.COMMIT_FAST_V, (360 - 256) / 1.5 * math.sqrt(2), 1e-9, '512: fast commit above ~98 m/s')
+T.check(f.commitDistance(98, 0) == 256 and f.commitDistance(69, 69) == 256 and f.commitDistance(99, 0) == 192
+  and f.commitDistance(70, -70) == 192, '512: commit distance by speed')
+T.check(d(193, 0, 90, 0, 0, 0, pend, 0, 0) == nil and d(257, 0, 90, 0, 0, 0, pend, 0, 0) == 'commit',
+  '512 at 90 m/s: commit past 256 m')
+T.check(d(193, 0, 120, 0, 0, 0, pend, 0, 0) == 'commit', '512 at 120 m/s: commit past 192 m')
 T.check(d(400, 0, 40, 0, 0, 0, { cx = 0, cy = 384, ready = false }, 0, 0) == 'discard', '512: prepared block off by > 260 m: discard')
 -- town speeds: the next block at least MIN_LEAD (256 m) ahead, not one grid step (a move every 128 m, each a ~50 ms frame
 -- on a Deck); standing still: no lead
@@ -296,6 +304,7 @@ lattice.configure(1024, 2.0)
 T.check(f.configure() == 1024, 'configure: the 1024² block at 2 m')
 T.check(f.SIZE == 1024 and f.HALF == 1024 and f.GRID == 256 and f.REACH == 420 and f.PREPARE_DIST == 300
   and f.RECHECK_S == 0, '1024 table restored')
+T.check(f.commitDistance(400, 0) == 450, '1024: one commit distance at every speed')
 tx = f.target(0, 0, 200, 0)
 T.check(tx == 256, '1024: derived REACH restored (clamped lead 256)')
 
