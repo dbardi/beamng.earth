@@ -37,6 +37,7 @@ import numpy as np
 
 import mapcells
 import roads as roadsmod
+import seatiles
 
 log = logging.getLogger("earthd.grading")
 
@@ -209,6 +210,23 @@ UNDER_FLAT_M = 12.0         # m either side of the crossing kept at the dip's fu
 UNDER_MAX_GRADE = 0.10      # a dip's ramp made steeper, up to this, to end inside its road part (under_dip)
 UNDER_JOINT_FLAT_M = 12.0   # at a junction, every road takes the deepest dip within this of it ...
 UNDER_JOINT_FADE_M = 20.0   # ... blended back to its own over this
+# A dip never takes a road under the sea's surface (+ UNDER_SEA_M): the sea's WaterBlock tiles flood their whole square
+# (seatiles.py), so on low ground by the sea or a tidal river the dug road lay under water (Perth's Mitchell and Kwinana
+# Freeways by the Swan River, GitHub #515, #518: ground 1-3 m up, dug up to UNDER_MAX_DROP_M; rebuilt offline
+# 2026-10-30, 363 and 703 points of road on dry ground dug to -6.0 m and -5.4 m, none after). Held at every point of the road, not only at the crossing: a crossing on a bank under UNDER_SEA_M
+# dug its flat and ramps 2-4 m under the sea on the dry ground beside (#515's interchange, rebuilt offline 2026-10-30).
+# The deck keeps less headroom there instead (as UNDER_MAX_DROP_M: rather a low bridge than a flooded road); a road
+# already under that is not lowered. A polder's (under UNDER_POLDER_M) dips as before: the tiles split away from it.
+UNDER_SEA_ON = os.environ.get("BNE_UNDER_SEA", "on") != "off"
+UNDER_SEA_M = 0.5           # m over the sea surface (seatiles.SEA_E) a dip's floor stays (the tiles' curve: <= 0.17 m)
+UNDER_POLDER_M = -1.0       # m: a road this far under the sea is behind dikes (the Netherlands' polders: 2-6 m under)
+# Where the elevation is lidar, a deck (its ends' ground, as raised) standing less than this over the road crossing
+# under it is not at deck height in the data: the lidar has the road's own ground there, and the road keeps it (the deck
+# rises instead). Sassafras Way runs on level ground under Pittsburgh's 28th Street Bridge (Street View), the bridge's
+# mapped end 0.4 m under it in the lidar; dug 8 m to clear that, its dip ran on through 28th Street and lowered Liberty
+# Avenue 3 m into a walled trench (the user's report, 2026-10-29). (Not on the coarse models: no cutting there, BR-381.)
+UNDER_LIDAR_ON = os.environ.get("BNE_UNDER_LIDAR", "on") != "off"
+UNDER_LIDAR_DECK_M = roadsmod.AT_GRADE_M
 # m around a cell's plans whose roads and spans its dips are solved on: the farthest a dip or a loose end reaches
 # (underpass_offsets: flat + the longest ramp, a junction's share) and a span's length; every cell sees the same
 UNDER_NEAR_M = 4 * VERTEX_STEP  # m past a cell's box its plans' dips are made (to their pieces' cut ends there)
@@ -1422,7 +1440,7 @@ class _Planner:
                     got[1] += self._end_raised(b[-1])
                 ez[j] = got
             return got
-        cands = []
+        cands, decks = [], []
         for i, cr in enumerate(crs):
             if not cr:
                 continue
@@ -1444,12 +1462,20 @@ class _Planner:
                 # UNDER_CLEAR_M dug the road out under a short overpass that sits lower)
                 clear = roadsmod.deck_road_clear(roadsmod.deck_depth(roadsmod.geom_span([b]))) + ROAD_LIFT
                 cands.append((i, float(s[j] + t[j] * (s[j + 1] - s[j])), deck - clear))
+                decks.append(deck)
         if not cands:
             return
         zc = self._under_ground(lines, [ground[g][1:] for g in gids], cands)
+        dem = getattr(self, "dem", None) or getattr(self.md, "dem", None)
+        lidar = UNDER_LIDAR_ON and not coarse and dem is not None and hasattr(dem, "coarse_at")
         requirements = []
-        for (i, sc, top), z in zip(cands, zc):
+        floor = seatiles.SEA_E + UNDER_SEA_M
+        for (i, sc, top), deck, z in zip(cands, decks, zc):
+            if lidar and deck < z + UNDER_LIDAR_DECK_M:
+                continue                        # (the ends' ground is not the deck: the road keeps its own)
             target = max(top, z - UNDER_MAX_DROP_M)
+            if UNDER_SEA_ON and z >= floor:
+                target = max(target, floor)     # (not under the sea's surface: its water tiles would flood it)
             if target < z - 0.1:
                 requirements.append((i, sc, z - target))
         if not requirements:
@@ -1479,7 +1505,11 @@ class _Planner:
             fid, p = plans[n]
             offset = np.zeros(len(near))        # (past the box: the plan's piece there is another cell's)
             offset[near] = got
-            np_ = Plan(p.xy, np.asarray(p.z) + offset, p.half, p.abut, p.cut, p.road_half)
+            z0 = np.asarray(p.z, f64)
+            z1 = z0 + offset
+            if UNDER_SEA_ON:                    # (every point: a dip's flat and ramps, a joined road's share)
+                z1 = np.where(z0 >= UNDER_POLDER_M, np.maximum(z1, np.minimum(z0, floor)), z1)
+            np_ = Plan(p.xy, z1, p.half, p.abut, p.cut, p.road_half)
             np_.rid, np_.max_wall, np_.bank = p.rid, p.max_wall, getattr(p, "bank", None)
             plans[n] = (fid, np_)
 

@@ -1608,6 +1608,8 @@ class Server:
         if anchor.bridges is not None:  # (the junction pads round the tile: roads.deck_pads)
             try:
                 pad_parts = list(anchor.bridges.parts(cells, (box[0] - 40, box[1] - 40, box[2] + 40, box[3] + 40)))
+                pad_parts = roadsmod.shifted_parts(pad_parts, roadsmod.deck_shift_fn(
+                    anchor.frame, cells, urban, self.road_widths, self.left_hand(anchor)))
                 pads_near = roadsmod.deck_pads([(f, sp, xy, z) for f, sp, xy, z, _lon in pad_parts], near_roads, box,
                                                anchor.bridges._ground, own=False)
             except Exception as ex:
@@ -1625,7 +1627,7 @@ class Server:
             guardrail_rows = guardrailsmod.forest_rows(anchor.frame, infra_fn, box, elev,
                                                        decks=guardrail_decks, parapets=parapets,
                                                        bridge_rails=roadmeshmod.BRIDGE_RAILS,
-                                                       supported_decks_out=low_parapet_decks)
+                                                       supported_decks_out=low_parapet_decks, roads=near_roads)
         except Exception as ex:
             log.warning("mapped guardrails: tile %s_%s: %s: %s", tx, ty, type(ex).__name__, ex)
             # A failed mapped-data pass cannot establish that a bridge needs rails.
@@ -6208,6 +6210,12 @@ def main():
     import sampler
     sampler.maybe_start()           # BNGE_SAMPLE=<path>: a sampling profile of this process's threads (debugging)
     import budget
+    try:                            # the settings page's Performance choices (GitHub #529): before the priority and
+        args.nice, chosen = cpupin.apply_player_settings(args.user_dir, args.nice, NICE)    # the cores' split below
+        if chosen:
+            log.info("the settings page: the server on %s", ", ".join(chosen))
+    except Exception as e:          # (the defaults then)
+        log.warning("could not read the settings page's server choices: %s", e)
     if args.nice:
         try:
             # all threads: below the game's main and physics threads (Windows: the "below normal" class)
