@@ -1,8 +1,17 @@
 -- luajit mod/tests/test_follow.lua  (terrain-follow math and rule, V1_1_SPEC 1a, V1_2_DESIGN 1.2, 2.3)
 local T = dofile((arg[0]:match('^(.*)[/\\]') or '.') .. '/testlib.lua')
 local f = require('beamngEarth/follow')
+local lattice = require('beamngEarth/lattice')
 
--- block geometry: 1024 samples at exactly 2.0 m, collidable width (N-1)*s = 2046 m (P1)
+-- the default since 2026-11-01: 1024 samples at 1 m, the 1 km table (as 512² at 2 m)
+T.check(f.SQUARE_SIZE == 1.0 and f.SIZE == 1024 and f.HALF == 512 and f.GRID == 128 and f.PREPARE_DIST == 128
+  and f.REACH == 260 and f.MIN_LEAD == 256, 'default: 1024 x 1 m, the 1 km table')
+local dx0 = f.blockOrigin(128, 0)
+T.check(dx0 == -384, '1 m: block position = cx - 512')
+
+-- the v1.3.1 block: 1024 samples at exactly 2.0 m, collidable width (N-1)*s = 2046 m (P1)
+lattice.configure(1024, 2.0)
+f.configure()
 T.check(f.SQUARE_SIZE == 2.0, 'squareSize = 2.0 (world-locked lattice)')
 T.check((f.SIZE - 1) * f.SQUARE_SIZE == 2046, 'collidable width (N-1)*s = 2046 m')
 T.check(f.REACH == 420, 'REACH = 1020 - 600 = 420 m (same as the server predict_centre)')
@@ -79,9 +88,8 @@ T.check(tx == 256, '1024 at 400 m/s: still the 420 m reach (no fast mode)')
 
 ------------------------------------------------------------------------------------------
 -- M4 (docs/V1_4_SPEC.md 3.5): the 512² table, its fast mode and the commit-time re-check
-local lattice = require('beamngEarth/lattice')
-lattice.configure(512)
-T.check(f.configure(512) == 512, 'configure(512)')
+lattice.configure(512, 2.0)
+T.check(f.configure() == 512, 'configure: the 512² block at 2 m')
 T.check(f.SIZE == 512 and f.HALF == 512 and f.GRID == 128 and f.PREPARE_DIST == 128 and f.COMMIT_DIST == 192
   and f.HARD_COMMIT_DIST == 320 and f.EDGE_MARGIN == 250 and f.REACH == 260 and f.LOOKAHEAD_S == 5
   and f.RECHECK_S == 2 and f.FAST_MODE_V == 150, '512 table active')
@@ -284,8 +292,8 @@ T.check(jit134 >= 150, string.format('134 m/s, 0.3-1.2 s latency per request, al
 T.check(jitAcc >= f.EDGE_MARGIN_FAST, string.format('100 -> 200 m/s through the fast mode: >= 90 m inside (min %.0f m)', jitAcc))
 
 -- back to 1024²: the table and the derived locals
-lattice.configure(1024)
-T.check(f.configure(1024) == 1024 and f.configure(4096) == 1024, 'configure(1024); unknown sizes -> 1024')
+lattice.configure(1024, 2.0)
+T.check(f.configure() == 1024, 'configure: the 1024² block at 2 m')
 T.check(f.SIZE == 1024 and f.HALF == 1024 and f.GRID == 256 and f.REACH == 420 and f.PREPARE_DIST == 300
   and f.RECHECK_S == 0, '1024 table restored')
 tx = f.target(0, 0, 200, 0)

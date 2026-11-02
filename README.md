@@ -93,6 +93,8 @@ You can help support development by reporting [issues](https://github.com/TecnaG
 **Driving and traffic**
 - Drive anywhere: the physics ground follows the car at 100+ mph, the world origin moves with you
   (floating origin), and the world streams ahead of you; you never fall out of the world.
+- The ground around the car is a 1 km terrain block at 1 m (3 ft) resolution, the stock maps' own detail, so road
+  edges, ditches and the ground at walls follow the map closely.
 - Buildings, sidewalks, curbs and bridge decks are solid (lean collision meshes near the car keep the
   physics' collision rebuilds cheap).
 - Real bridge and tunnel heights where open data measures them: in the US, bridge decks follow the USGS 3DEP lidar

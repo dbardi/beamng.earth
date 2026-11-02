@@ -310,7 +310,7 @@ class ServerSurfaceTest(unittest.TestCase):
     def make(self, **kw):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        s = earthd.Server(tmp.name, os.path.join(tmp.name, "cache"), imagery=None, cells=64, block=512, **kw)
+        s = earthd.Server(tmp.name, os.path.join(tmp.name, "cache"), imagery=None, cells=64, block=1024, **kw)
         self.addCleanup(s.hm_pool.shutdown)
         self.addCleanup(s.tile_pool.shutdown)
         s.dem = self.Dem()
@@ -357,7 +357,7 @@ class ServerSurfaceTest(unittest.TestCase):
         self.assertTrue(info["surfaceComplete"])
         grass = np.array(Image.open(os.path.join(s.out_dir, info["layers"][sf.GRASS])))
         dirt = np.array(Image.open(os.path.join(s.out_dir, info["layers"][sf.DIRT])))
-        self.assertEqual(grass.shape, (512, 512))
+        self.assertEqual(grass.shape, (1024, 1024))         # one mask pixel per block sample
         self.assertTrue((grass[:200] == 255).all() and (grass[-200:] == 0).all(), "row 0 is north (grass)")
         self.assertTrue((dirt[-200:] == 255).all())
         conn = earthd.Connection.__new__(earthd.Connection)

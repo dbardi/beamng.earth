@@ -947,9 +947,9 @@ local function onMessage(msg)
     M.sendGraphics()
     -- the on-screen credits: this session's own follow (the attribution line until then)
     credits.clear()
-    -- M4: the terrain block size first (everything below may use the lattice / follow table); a
-    -- server without hello.blockSize has the v1.3.1 1024² block
-    local size, okSize = M.setBlockSize(msg.blockSize or 1024)
+    -- M4: the terrain block first (everything below may use the lattice / follow table); a server without
+    -- hello.squareSize has 2 m squares, without hello.blockSize the v1.3.1 1024² block
+    local size, okSize = M.setBlockSize(msg.blockSize or 1024, msg.squareSize or 2.0)
     if not okSize then
       setStatus('Unsupported terrain block size ' .. tostring(msg.blockSize) .. ': using ' .. size)
     end
@@ -2423,11 +2423,11 @@ function M.toggleUI() ui.visible = not ui.visible end
 -- The session's terrain block size (docs/V1_4_SPEC.md 3.5, M4): 1024 (v1.3.1) or 512, from the
 -- server's hello.blockSize. Sets the lattice, the terrain-follow table, the importMaps layer / flat
 -- maps and the rebase staleness rule together. Returns the size in use and whether `size` was valid.
-function M.setBlockSize(size)
-  local n, ok = lattice.configure(tonumber(size))
-  follow.configure(n)
+function M.setBlockSize(size, square)
+  local n, ok, width = lattice.configure(tonumber(size), tonumber(square))
+  follow.configure()
   terrain.configure(n)
-  rebase.configure(n)
+  rebase.configure(width)
   blockSize = n
   return n, ok
 end
