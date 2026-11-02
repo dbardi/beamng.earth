@@ -347,6 +347,9 @@ their chunk arrived.
     + 0.5 s** (never past the hard commit, never to re-request the same centre). The spec's unguarded
     rule discarded nearly every block in the offline model (77 of 78 commits at 134 m/s) and took a
     250 m/s car up to 98 m off the block at 1.2 s latency.
+  - Commit distance (the 1 km table): 256 m, and 192 m above `follow.COMMIT_FAST_V`,
+    (360 - 256) / 1.5 s × √2 ≈ 98 m/s, the speed past which a commit at 256 m leaves the re-check less than
+    1.5 s before the edge band on a diagonal.
   - A ready block that would still be no better than the current one where the player reaches the
     hard commit distance (straight on) is dropped, so the next frame prepares the target; before
     (review, 2026-10-10) it blocked every request until it left the 260 / 420 m reach.
@@ -358,7 +361,7 @@ their chunk arrived.
   - Stale-anchor rule (512 only): a stale rebase anchor is still committed when the player is
     ≥ 150 m inside its terrain's collidable area; otherwise discarded and re-requested with the
     terrain at p + v·(measured anchor latency + 1 s) (`core.rebaseHint`), so a slow server cannot
-    loop. `rebase.STALE_DIST` 450 / 192 m (= the table's commit distance).
+    loop. `rebase.STALE_DIST` 450 / 256 m (= the table's commit distance).
   - Assets: `beamngEarth_layer_512.png`, `beamngEarth_flat_512.png` (`tools/make_level_assets.py`).
 - **Tests**: `test_heightmap` over (32, 1024²) and (64, 512²) (128 m moves bit-identical, even SW
   lattice index); `test_server` `MeshServer64Block512Test` (+ the prefetch against modsim's 512 rule,
