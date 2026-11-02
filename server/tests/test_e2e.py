@@ -33,11 +33,14 @@ class EndToEndTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.user = self.tmp.name
+        # the desktop budget: on a machine under budget.SMALL_GB the server scales the far field's K table down,
+        # and the expected tiles below are farfield.select's desktop ones
         self.proc = subprocess.Popen(
             [sys.executable, str(SERVER_DIR / "earthd.py"), "--port", "0",
              "--user-dir", self.user, "--cache-dir", CACHE, "--weather", "off", "--gravity", "off",
              "--update-check", "off"] + self.args,
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            env=dict(os.environ, BNGE_BUDGET="desktop"))
         self.addCleanup(stop_server, self.proc)     # a failed start too: no server or workers left behind
         line = self.proc.stdout.readline()
         self.assertIn("listening on 127.0.0.1:", line)
