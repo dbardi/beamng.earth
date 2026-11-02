@@ -145,26 +145,9 @@ def follow_table(size=1024, square=None):
     F = FOLLOW
     return {"SIZE": n, "HALF": n * sq / 2, "GRID": F["GRID" + t], "PREPARE_DIST": F["PREPARE_DIST" + t],
             "COMMIT_DIST": F["COMMIT_DIST" + t], "HARD_COMMIT_DIST": F["HARD_COMMIT_DIST" + t],
-            "COMMIT_DIST_FAST": F["COMMIT_DIST_FAST" + t],
-            "COMMIT_FAST_V": _commit_fast_speed(F["RECHECK_S" + t], F["COMMIT_DIST" + t]),
             "MIN_LEAD": F["MIN_LEAD" + t],
             "EDGE_MARGIN": F["EDGE_MARGIN" + t], "REACH": F["REACH" + t], "LOOKAHEAD_S": F["LOOKAHEAD_S" + t],
             "RECHECK_S": F["RECHECK_S" + t], "FAST_MODE_V": F["FAST_V" + t]}
-
-
-def _commit_fast_speed(recheck_s, commit_dist):
-    """follow.commitFastSpeed: the speed above which the commit distance is COMMIT_DIST_FAST."""
-    if recheck_s <= 0:
-        return math.inf
-    return (FOLLOW["RECHECK_SAFE"] - commit_dist) / (FOLLOW["LATENCY_S"] + FOLLOW["RECHECK_SLACK_S"]) * math.sqrt(2)
-
-
-def follow_commit_distance(vx, vy, size=1024):
-    """follow.commitDistance: the Chebyshev distance past which a ready block is committed."""
-    T = follow_table(size)
-    if vx * vx + vy * vy > T["COMMIT_FAST_V"] ** 2:
-        return T["COMMIT_DIST_FAST"]
-    return T["COMMIT_DIST"]
 
 
 def rebase_table(size=1024, square=None):
@@ -250,7 +233,7 @@ def follow_decide(px, py, vx, vy, cx, cy, pending, now=0.0, retry_at=0.0, gate=N
     d = cheb(px, py, cx, cy)
     if pending:
         pd = cheb(px, py, pending["cx"], pending["cy"])
-        if pending.get("ready") and pd < d and d > follow_commit_distance(vx, vy, size):
+        if pending.get("ready") and pd < d and d > T["COMMIT_DIST"]:
             r = T["RECHECK_S"]
             lead_set = T["MIN_LEAD"] > 0 and (vx * vx + vy * vy) * T["LOOKAHEAD_S"] ** 2 < T["MIN_LEAD"] ** 2
             if (r > 0 and ahead == 0 and not lead_set and d <= T["HARD_COMMIT_DIST"]
