@@ -90,7 +90,7 @@ T.check(tx == 256, '1024 at 400 m/s: still the 420 m reach (no fast mode)')
 -- M4 (docs/V1_4_SPEC.md 3.5): the 512² table, its fast mode and the commit-time re-check
 lattice.configure(512, 2.0)
 T.check(f.configure() == 512, 'configure: the 512² block at 2 m')
-T.check(f.SIZE == 512 and f.HALF == 512 and f.GRID == 128 and f.PREPARE_DIST == 128 and f.COMMIT_DIST == 192
+T.check(f.SIZE == 512 and f.HALF == 512 and f.GRID == 128 and f.PREPARE_DIST == 128 and f.COMMIT_DIST == 256
   and f.HARD_COMMIT_DIST == 320 and f.EDGE_MARGIN == 250 and f.REACH == 260 and f.LOOKAHEAD_S == 5
   and f.RECHECK_S == 2 and f.FAST_MODE_V == 150, '512 table active')
 T.check(f.REACH_FAST == 420 and f.LOOKAHEAD_FAST_S == 3 and f.PREP_AHEAD_FAST_S == 0.75, 'fast mode: reach 420, 3 s, test 0.75 s ahead')
@@ -106,13 +106,13 @@ for _, c in ipairs({ { 0, 0, 120, 0 }, { 1000, 1000, 100, -100 }, { -333, 777, -
   T.check(c[1] - (cx - 512) >= 250 and (cx + 510) - c[1] >= 250 and c[2] - (cy - 512) >= 250 and (cy + 510) - c[2] >= 250,
     string.format('player (%g,%g) >= 250 m inside block (%d,%d)', c[1], c[2], cx, cy))
 end
--- 40 m/s geometry: prepare past 128 m, commit past 192 m
+-- 40 m/s geometry: prepare past 128 m, commit past 256 m
 T.check(d(128, 0, 40, 0, 0, 0, nil, 0, 0) == nil, '512: at 128 m: no request')
 a, cx, cy = d(129, 0, 40, 0, 0, 0, nil, 0, 0)
 T.check(a == 'prepare' and cx == 384 and cy == 0, '512: past 128 m: prepare snap128(p + 5 s v)')
 pend = { cx = 256, cy = 0, ready = true }
-T.check(d(192, 0, 40, 0, 0, 0, pend, 0, 0) == nil, '512: ready at 192 m: hold')
-T.check(d(193, 0, 40, 0, 0, 0, pend, 0, 0) == 'commit', '512: ready past 192 m: commit')
+T.check(d(256, 0, 40, 0, 0, 0, pend, 0, 0) == nil, '512: ready at 256 m: hold')
+T.check(d(257, 0, 40, 0, 0, 0, pend, 0, 0) == 'commit', '512: ready past 256 m: commit')
 T.check(d(400, 0, 40, 0, 0, 0, { cx = 0, cy = 384, ready = false }, 0, 0) == 'discard', '512: prepared block off by > 260 m: discard')
 -- town speeds: the next block at least MIN_LEAD (256 m) ahead, not one grid step (a move every 128 m, each a ~50 ms frame
 -- on a Deck); standing still: no lead
