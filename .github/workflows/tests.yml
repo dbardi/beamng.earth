@@ -1,5 +1,5 @@
-# The test suites, on every pull request, every push to main and dev, and "Run workflow" (release.yml only builds the
-# app and runs --help):
+# The test suites, on every pull request, every push to main, develop (gitflow) and dev, and "Run workflow"
+# (release.yml only builds the app and runs --help):
 # - python: the server tests (tools/run_tests.py) against the Rust module built from this commit's source, with LuaJIT
 #   so the tests that run the mod's own Lua (test_modsim, the Lua agreement checks) run too. BNGE_SKIP_DRIVE=1 leaves
 #   out the long drive test. Some tests download real map data (test_e2e, test_credits): they need the network.
@@ -11,7 +11,7 @@ name: tests
 on:
   pull_request:
   push:
-    branches: [main, dev]
+    branches: [main, develop, dev]
   workflow_dispatch:
 
 permissions:
