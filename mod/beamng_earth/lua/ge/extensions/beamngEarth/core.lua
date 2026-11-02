@@ -18,7 +18,7 @@
 -- connection banner (banner.lua) says what is wrong with the world server, the edge guard
 -- (edgeguard.lua) holds the car on the last physics block while the server cannot move it (never
 -- while the server is healthy), and hello / pose name the session folders whose files the far
--- tiles still use (farfield.heldSessions), so a restarted server keeps them (server/README.md).
+-- tiles still use (roads.allHeldSessions), so a restarted server keeps them (server/README.md).
 --
 -- World logic is active in our level (levels/beamng_earth) from the start, and in any other
 -- level once the player teleports (for testing). Console helpers:
@@ -383,13 +383,13 @@ local function loadBlock(tr)
   local base = nil
   if nearVisual == 'detail' then base = type(tr.base) == 'string' and tr.base or false end
   local ter = M.TER_SWAP and type(tr.ter) == 'string'
-  if ter and terrain.swap(tr.ter, sq, maxH, x, y, tr.zBase, layers, base, tonumber(tr.baseSize)) then
+  if ter and terrain.swap(tr.ter, sq, maxH, x, y, tr.zBase, layers, base, tonumber(tr.baseSize), tr.fine) then
     roads.terrainSwapped()      -- its collision follows by itself next frame: no other rebuild meanwhile
     groundcover.afterBlockChange()
     return true, nil, true
   end
   local ok, err = terrain.load(tr.heightmap, sq, maxH, x, y, tr.zBase, layers, base, tonumber(tr.baseSize))
-  if ok and ter and terrain.swap(tr.ter, sq, maxH, x, y, tr.zBase, layers, base, tonumber(tr.baseSize)) then
+  if ok and ter and terrain.swap(tr.ter, sq, maxH, x, y, tr.zBase, layers, base, tonumber(tr.baseSize), tr.fine) then
     roads.terrainSwapped()
   end
   -- every block import / move drops all the grass on it; rebuild it before this frame is drawn
@@ -718,6 +718,7 @@ local function commitTerrain(msg)
   local ls = swapped and terrain.lastSwap or nil
   local c = { load = tLoad, coll = tColl - tLoad, cover = sw() - tColl, f = {}, swap = swapped or nil,
     ter = ls and ls.apply or nil,   -- the .ter load alone (ms)
+    fine = ls and ls.fine or nil,   -- (of it: the fine ground's pieces made, terrain.lua)
     mats = ls and ls.mats or nil, fresh = ls and ls.fresh or nil, at = { msg.cx, msg.cy } }
   table.insert(st.commits, c)
   if #st.commits > COMMIT_LOG then table.remove(st.commits, 1) end
@@ -890,7 +891,7 @@ local function onMessage(msg)
     end
     -- vegFlat: the vegetation tiles may come as one flat array of numbers (trees.lua onTile), no table per tree
     net.send({ type = 'hello', protocol = PROTOCOL, format = FORMAT, modVersion = MOD_VERSION,
-      sessions = farfield.heldSessions(), slotSession = farfield.session(), slotsHeld = held, vegFlat = true,
+      sessions = roads.allHeldSessions(), slotSession = farfield.session(), slotsHeld = held, vegFlat = true,
       geoTiles = require('beamngEarth/geotile').Z,
       -- (geotiles: vegetation in the global tiles' frames: trees.lua)
       roadGeo = roads.ROAD_GEO,        -- (road tiles as geotiles too: roads.lua)
@@ -1041,7 +1042,8 @@ local function onMessage(msg)
       setStatus('Unexpected terrain_ready (size ' .. tostring(msg.size) .. ')')
       return
     end
-    p.ready, p.msg = true, msg -- committed by the distance rule in updateWorld()
+    p.ready, p.msg, p.readyAt = true, msg, st.clock -- committed by the distance rule in updateWorld()
+    terrain.finePrepare(msg)      -- (its fine ground's pieces made ahead, a few a frame: terrain.fineStep)
     if p.sentAt then st.terrainLatency = st.clock - p.sentAt end
     st.terrainErrorAt = nil
   elseif t == 'terrain_refresh' then
@@ -1054,7 +1056,13 @@ local function onMessage(msg)
     if msg.anchorId ~= st.anchorId then
       st.refreshLater = msg
     elseif st.block and msg.cx == st.block.cx and msg.cy == st.block.cy and msg.size == terrain.SIZE then
-      if windowMinimized() then st.deferredRefresh = msg else commitTerrain(msg) end
+      if windowMinimized() then st.deferredRefresh = msg
+      elseif type(msg.fine) == 'table' then
+        -- (its fine ground's pieces made ahead first, a few a frame: made in the swap's frame they held it 1-3 s on the
+        -- Stelvio, 2026-11-01; committed by updateWorld once they are, or after 5 s)
+        terrain.finePrepare(msg, true)
+        st.refreshFine = { msg = msg, at = st.clock }
+      else commitTerrain(msg) end
     end
   elseif t == 'terrain_error' then
     local p = st.terrainPending
@@ -1448,7 +1456,7 @@ local function updateWorld(dt)
     net.send({ type = 'pose', anchorId = st.anchorId, x = pl.x, y = pl.y, z = pl.z, vx = pl.vx, vy = pl.vy,
       lat = pl.lat, lon = pl.lon, speed = pl.speed, follow = not st.followHeld,
       held = (farfield.session() == st.sessionId) and farfield.heldAnchors() or {},
-      sessions = farfield.heldSessions(),
+      sessions = roads.allHeldSessions(),
       slotsGone = slotsGoneNow(), -- pooled shape slots let go (server/matslots.py)
       foci = poseFoci(),          -- other vehicles' collision islands (collisionfoci.lua; earthd parse_foci)
       cam = c and { x = c.x, y = c.y, z = c.z, fx = c.fx, fy = c.fy, fz = c.fz, fovDeg = c.fovDeg, h = c.h } or nil })
@@ -1534,10 +1542,24 @@ local function updateWorld(dt)
       held and 'held' or 'resumed', pl.z - (gz or pl.z)))
   end
   if held then return end
+  terrain.fineStep()
+  local rf = st.refreshFine
+  if rf and (terrain.fineReady(rf.msg.ter, rf.msg.fine) or st.clock - rf.at > 5) then
+    st.refreshFine = nil         -- (a refresh waiting for its fine ground's pieces: 'terrain_refresh')
+    if st.block and rf.msg.cx == st.block.cx and rf.msg.cy == st.block.cy and rf.msg.anchorId == st.anchorId then
+      commitTerrain(rf.msg)
+    end
+  end
   local b = st.block
   -- commit gating: the far tiles of the strip the move uncovers must be live, and no coarse tile
-  -- may straddle the new block (design 2.3, farfield.uncoverReady)
-  local gate = b and function(ncx, ncy) return farfield.uncoverReady(b.cx, b.cy, ncx, ncy) end
+  -- may straddle the new block (design 2.3, farfield.uncoverReady); its fine ground's pieces made ahead, for up to
+  -- 4 s after it was ready (the rest made in the swap's frame: 1.2 s when it came 2 s after, 2026-11-01)
+  local gate = b and function(ncx, ncy)
+    if not farfield.uncoverReady(b.cx, b.cy, ncx, ncy) then return false end
+    local tp = st.terrainPending
+    return not (tp and tp.msg) or terrain.fineReady(tp.msg.ter, tp.msg.fine)
+      or st.clock - (tp.readyAt or st.clock) > 4
+  end
   local fa, tx, ty = follow.decide(pl.x, pl.y, pl.vx, pl.vy, b and b.cx, b and b.cy, st.terrainPending,
     st.clock, st.terrainRetryAt, gate, st.terrainLatency)
   if fa == 'prepare' then
@@ -2515,7 +2537,7 @@ function M.status()
     cells = crossover.cells(), blockSize = blockSize, anchorLatency = st.anchorLatency,
     terrainLatency = st.terrainLatency, horizon = horizonOn, farRadius = farRadius,
     visibleDistance = st.visibleDistance or VISIBLE_DISTANCE, banner = banner.current().id, guard = st.guard.mode,
-    sessions = farfield.heldSessions(), tileSession = farfield.session(), sea = sea.status(), trees = trees.status(), ambience = ambience.status() })
+    sessions = roads.allHeldSessions(), tileSession = farfield.session(), sea = sea.status(), trees = trees.status(), ambience = ambience.status() })
 end
 
 -- The connection state line (the settings page shows it): the banner's { id, level, text } (text

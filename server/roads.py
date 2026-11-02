@@ -125,8 +125,9 @@ def look_of(spec):
     if spec.kind == "paved" and spec.surf == "concrete":
         return CONCRETE
     return LOOK[spec.kind]
-Spec = namedtuple("Spec", "width kind urban cls oneway walk dir kmh gap median lanes surf link sides",
-                  defaults=(False, 2.5, 0, None, None, None, None, None, False, None))   # median: m to the other carriageway's centre line
+Spec = namedtuple("Spec", "width kind urban cls oneway walk dir kmh gap median lanes surf link sides mountain",
+                  defaults=(False, 2.5, 0, None, None, None, None, None, False, None, False))   # median: m to the other carriageway's centre line
+# (mountain: a mountain pass road, _mountain_roads)
 # (sides: the sidewalk sides OpenStreetMap's sidewalk tag gives (_osm_sidewalks; walk_sides' +1 left / -1 right of the
 # geometry, () none), None where it has none: the class and land-cover rule, has_sidewalks; from mpsteppe's PR #292)
 # (lanes: OpenStreetMap's lane count, both directions on a two-way road, None unknown: osmtags.py; surf: the surface
@@ -262,18 +263,58 @@ def _rule_value(table, i):
     return None if j < 0 else table.value[j]
 
 
-def level_ranges(feats, i):
+HOME_RANGES_ON = os.environ.get("BNE_HOME_RANGES", "on") != "off"
+
+
+def home_copy(feats, i):
+    """(feats', j) of feature i's copy in its home cell (the cell of its first point, among the eight round feats'
+    cell: mapdata's _bnge_neighbours), None where that is this cell or not at hand. A road's copies in the cells it
+    crosses each see other roads round them: what depends on those (its lanes, its bridge ranges) is taken from one."""
+    me = feats.__dict__.get("_bnge_cell")
+    hook = feats.__dict__.get("_bnge_neighbours")
+    if me is None or hook is None:
+        return None
+    import mapcells
+    a = feats.coord_off[feats.ring_off[feats.part_off[i]]]
+    home = str(mapcells.cell_of(float(feats.lonlat[a, 1]), float(feats.lonlat[a, 0])))
+    if home == me[0]:
+        return None
+    try:
+        near = {f.__dict__["_bnge_cell"][0]: f for f in hook() if f is not None and f.__dict__.get("_bnge_cell")}
+    except Exception as e:              # (this cell's own)
+        log.debug("home copy: neighbours: %s: %s", type(e).__name__, e)
+        return None
+    other = near.get(home)
+    if other is None:
+        return None
+    pos = other.__dict__.get("_id_pos")
+    if pos is None:
+        pos = other.__dict__["_id_pos"] = {fid: j for j, fid in enumerate(other.ids.tolist())}
+    j = pos.get(feats.ids[i])
+    return None if j is None else (other, j)
+
+
+def level_ranges(feats, i, _home=True):
     """The off-ground ranges of feature i as sorted (start, end, "bridge" | "tunnel") fractions of its
     length, from its flags (is_bridge / is_tunnel) and level (> 0 bridge, < 0 tunnel) rules. Overture
     puts most bridges on a range of a longer segment (2026-10-11: a street with a few metres of bridge
-    was taken whole as a bridge and dropped). Pure. A cell's are made all at once and shared (cell_facts)."""
+    was taken whole as a bridge and dropped). Pure. A cell's are made all at once and shared (cell_facts).
+    Its home cell's copy's (home_copy): lengthened over the roads crossing under it and joined over the lidar's
+    elevated stretches, the copy in each cell saw other roads (a ramp by I-395 in Baltimore: one deck from 9.5 % in
+    one cell, two with a ground gap at 14-16 % in the next, both drawn, one 8 m under the other)."""
+    if _home and HOME_RANGES_ON:
+        h = home_copy(feats, i)
+        if h is not None:
+            return level_ranges(h[0], h[1], _home=False)
     memo = feats.__dict__.setdefault("_level_ranges", {})
     got = memo.get(i)
     if got is None:
         _cell_ranges(feats)
         got = memo.get(i)
         if got is None:
-            got = memo[i] = _lidar_gaps(feats, i, rule_level_ranges(feats, i))
+            # (the lidar's elevated stretches gap-filled again: one ending 12 m short of the map's deck left a ground
+            # piece between them mid-ramp, by I-395 in Baltimore)
+            got = memo[i] = _deck_gaps(feats, i, _lidar_gaps(feats, i, rule_level_ranges(feats, i)))
     if feats.__dict__.get("_lidar_rule"):
         import revisit                      # (the rule for want of the lidar: nothing built on it is kept)
         revisit.fault()
@@ -365,7 +406,7 @@ def _cell_ranges(feats, load_only=False):
     import revisit
     f0 = revisit.faults()
     raw = [raw_level_ranges(feats, i) for i in range(len(feats))]
-    lvl = [level_ranges(feats, i) for i in range(len(feats))]
+    lvl = [level_ranges(feats, i, _home=False) for i in range(len(feats))]
     st["_ranges_state"] = "done"
     if revisit.faults() == f0:
         _facts_store(feats, "ranges", None, {"raw": [[[float(a), float(b), k] for a, b, k in r] for r in raw],
@@ -1338,7 +1379,7 @@ def rural_motorway(spec):
 def edge_margin(spec):
     """m of a drawn carriageway beside its driving lanes on each side, parking aside: a rural road's edge strip or
     a rural motorway's shoulder (carriageway), 0 in towns."""
-    if spec.urban or spec.kind not in BUILT or spec.cls == "service":
+    if spec.urban or spec.kind not in BUILT or spec.cls == "service" or getattr(spec, "mountain", False):
         return 0.0
     return motorway_shoulder(spec) if rural_motorway(spec) else EDGE_STRIP_CLASS_M.get(spec.cls, EDGE_STRIP_M)
 
@@ -1551,7 +1592,16 @@ def road_tapers(feats, urban_fn=None, widths=None, left_hand=False):
     k = (urban_fn, widths, bool(left_hand))
     got = memo.get(k)
     if got is None:
-        got = memo[k] = _tapers(feats, road_specs(feats, urban_fn, widths, left_hand))
+        specs = road_specs(feats, urban_fn, widths, left_hand)
+        got = _tapers(feats, specs)
+        for i, sp in enumerate(specs):          # (a pass road's hairpins: hairpin_tapers)
+            if sp is not None and sp.mountain:
+                a = feats.coord_off[feats.ring_off[feats.part_off[i]]]
+                b = feats.coord_off[feats.ring_off[feats.part_off[i] + 1]]
+                hp = hairpin_tapers(feats.lonlat[a:b], sp.width)
+                if hp:
+                    got[i] = tuple(got[i] or ()) + hp
+        memo[k] = got
     return got
 
 
@@ -1999,7 +2049,100 @@ def _road_specs(feats, urban_fn, left_hand):
                 width = _osm(feats, "width", j, *OSM_WIDTH_M)
             w = carriageway(sp.cls, sp.kind, False, width, sp.oneway, sp.lanes)
             out[j] = sp._replace(urban=False, width=_dual_width(sp._replace(urban=False), w, sp.median, feats, j))
-    return _osm_sidewalks(feats, _rural_connectors(feats, out))
+    return _mountain_roads(feats, _osm_sidewalks(feats, _rural_connectors(feats, out)))
+
+
+# Mountain pass roads (the user, 2026-10-31: the Stelvio Pass; its aerial: 6.1 m of asphalt between edge lines, no
+# centre line, a dry-stone retaining wall right at the uphill edge and a stone parapet along the valley's; drawn 8 m
+# wide with a centre line on a 20-24 m graded bench, the walls and the parapets set back off the road or missing). A
+# rural road whose line has MOUNTAIN_SWITCHBACKS switchbacks or more (MOUNTAIN_TURN_DEG of turn within 2 x
+# MOUNTAIN_SPAN_M: earthfast.tight_bends) and no mapped width or lane count is MOUNTAIN_ROAD_M wide, without edge strips
+# or a centre line, and the grading keeps no verge beside it (grading.shoulder). Its whole line counts: the map's road
+# is one feature over the pass, the same in every cell.
+MOUNTAIN_CLASSES = {"secondary", "tertiary", "unclassified"}
+MOUNTAIN_SWITCHBACKS = 3
+MOUNTAIN_SPAN_M = 20.0
+MOUNTAIN_TURN_DEG = 150.0
+MOUNTAIN_ROAD_M = 6.0
+MOUNTAIN_ON = os.environ.get("BNE_MOUNTAIN_ROADS", "on") != "off"
+
+
+def switchbacks(lonlat):
+    """How many switchbacks a lon/lat polyline (k, 2) has (MOUNTAIN_*)."""
+    import fast
+    fast.require(42, "tight_bends")
+    ll = np.asarray(lonlat, np.float64)
+    if len(ll) < 3:
+        return 0
+    kx = 111320.0 * math.cos(math.radians(float(ll[:, 1].mean())))
+    xy = np.ascontiguousarray(np.c_[(ll[:, 0] - ll[0, 0]) * kx, (ll[:, 1] - ll[0, 1]) * 111320.0])
+    m = np.asarray(fast._ef.tight_bends(xy, MOUNTAIN_SPAN_M, MOUNTAIN_TURN_DEG), bool)
+    return int(np.count_nonzero(m[1:] & ~m[:-1]) + (1 if m[0] else 0))
+
+
+# A pass road's hairpins are widened (the Stelvio's aerial: ~6 m legs, 10-12 m round each hairpin, the turning cars'
+# swept path; the AI cut the inside of a 6 m hairpin onto the island's parapet, 2026-11-01): HAIRPIN_WIDEN_M more at
+# each hairpin's apex (the middle of its run of MOUNTAIN_TURN_DEG turns), fading out over HAIRPIN_SPAN_M from it, as a
+# taper of the road (road_tapers: its paint, markings, the grading's pads and parapets follow).
+HAIRPIN_WIDEN_M = 4.0
+HAIRPIN_SPAN_M = 22.0
+
+
+def hairpin_apexes(lonlat):
+    """The (lon, lat) of each hairpin's apex on a lon/lat polyline (k, 2): the middle point of each run of points in a
+    MOUNTAIN_TURN_DEG turn within 2 x MOUNTAIN_SPAN_M (earthfast.tight_bends)."""
+    ll = np.asarray(lonlat, np.float64)
+    if len(ll) < 3:
+        return []
+    kx = 111320.0 * math.cos(math.radians(float(ll[:, 1].mean())))
+    xy = np.c_[(ll[:, 0] - ll[0, 0]) * kx, (ll[:, 1] - ll[0, 1]) * 111320.0]
+    return [(float(ll[k, 0]), float(ll[k, 1])) for k in hairpin_apex_rows(xy)]
+
+
+def hairpin_apex_rows(xy):
+    """hairpin_apexes on a polyline xy (k, 2) in metres: the index of each apex's point."""
+    import fast
+    fast.require(42, "tight_bends")
+    xy = np.ascontiguousarray(np.asarray(xy, np.float64)[:, :2])
+    if len(xy) < 3:
+        return []
+    m = np.asarray(fast._ef.tight_bends(xy, MOUNTAIN_SPAN_M, MOUNTAIN_TURN_DEG), bool)
+    out, i = [], 0
+    while i < len(m):
+        if not m[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < len(m) and m[j + 1]:
+            j += 1
+        out.append((i + j) // 2)
+        i = j + 1
+    return out
+
+
+def hairpin_tapers(lonlat, width):
+    """The tapers (as road_tapers': (lon, lat, width there, length)) of a pass road's hairpins (HAIRPIN_*)."""
+    return tuple((lo, la, float(width) + HAIRPIN_WIDEN_M, HAIRPIN_SPAN_M) for lo, la in hairpin_apexes(lonlat))
+
+
+def _mountain_roads(feats, specs):
+    """specs with the mountain pass roads narrowed and marked (MOUNTAIN_*). Pure."""
+    if not MOUNTAIN_ON:
+        return specs
+    rules = feats.rules
+    out = list(specs)
+    for i, sp in enumerate(specs):
+        if sp is None or sp.urban or sp.cls not in MOUNTAIN_CLASSES or sp.kind != "paved" or sp.oneway \
+                or sp.median or sp.lanes is not None:
+            continue
+        if _rule_value(rules.get("width"), i) is not None or _osm(feats, "width", i, *OSM_WIDTH_M) is not None:
+            continue
+        a = feats.coord_off[feats.ring_off[feats.part_off[i]]]
+        b = feats.coord_off[feats.ring_off[feats.part_off[i] + 1]]
+        if b - a < 3 or switchbacks(feats.lonlat[a:b]) < MOUNTAIN_SWITCHBACKS:
+            continue
+        out[i] = sp._replace(width=min(sp.width, MOUNTAIN_ROAD_M), mountain=True)
+    return out
 
 
 def _rural_connectors(feats, specs):
@@ -2168,13 +2311,16 @@ def _bridge_specs(feats, want="bridge"):
 
 
 class _EndJoin:
-    """Line end points joined into nodes when within tol m of each other (the first point seen names the node; a later
-    one joins the nearest node within tol). Rounding to a 0.5 m grid split ends a few cm apart either side of a grid
-    line and joined ends 0.68 m apart on a diagonal (from cody196's PR #368). A grid of tol cells, the 3 x 3 around a
-    point looked up: as cheap as the rounding. Deterministic for a given order."""
+    """Line end points joined into nodes when within tol m of a point already in one (the first point seen names the
+    node; a later one joins the node of its nearest point within tol, and is one of its points after). Rounding to a
+    0.5 m grid split ends a few cm apart either side of a grid line and joined ends 0.68 m apart on a diagonal (from
+    cody196's PR #368). Against the node's first point alone, four ramps' ends within 0.5 m of their neighbours at a
+    Springfield junction made two nodes: one ramp's end an abutment at the ground, 9 m under the others (2026-10-31,
+    rampcheck.py). A grid of tol cells, the 3 x 3 around a point looked up. Deterministic for a given order; nodes
+    numbered in the order they are made."""
 
     def __init__(self, tol=0.5):
-        self.tol, self.grid, self.pts = tol, {}, []
+        self.tol, self.grid, self.pts, self.node, self.n = tol, {}, [], [], 0
 
     def __call__(self, p):
         x, y = float(p[0]), float(p[1])
@@ -2188,10 +2334,17 @@ class _EndJoin:
                     if d < bd or (d == bd and best is not None and i < best):
                         best, bd = i, d
         if best is not None:
-            return best
+            nd = self.node[best]
+            if bd > 1e-12:                  # (a point of its node now: the next end within tol of it joins too)
+                self.pts.append((x, y))
+                self.node.append(nd)
+                self.grid.setdefault((gx, gy), []).append(len(self.pts) - 1)
+            return nd
         self.pts.append((x, y))
+        self.node.append(self.n)
         self.grid.setdefault((gx, gy), []).append(len(self.pts) - 1)
-        return len(self.pts) - 1
+        self.n += 1
+        return self.n - 1
 
 
 def _chain_graph(lines):
@@ -2307,7 +2460,12 @@ TIE_EASE_GRADE = 0.025          # rise over run of the easing from the tied heig
 TIE_EASE_MIN_M = 20.0           # ... over this at the least
 
 
-def _tie_beside(lines, zs, specs):
+TIE_MEASURED_M = 0.5        # m: a part whose heights a source measured (roadz: the lidar) is held at its road's
+                            # only this near it (the two measured apart at a fork), never a level apart: the tie had
+                            # pulled measured ramps by I-395 1.6 and 4.9 m off the lidar's
+
+
+def _tie_beside(lines, zs, specs, measured=None):
     """zs with each branch (a ramp, else the narrower part) that leaves or joins another part (its end on that part's
     deck) held at
     that part's height while their slabs are joined (TIE_*), eased into its own profile after. lines: (k, >= 2) per
@@ -2325,6 +2483,20 @@ def _tie_beside(lines, zs, specs):
         d = np.hypot(*(q - near).T)
         k = int(np.argmin(d))
         return float(d[k]), float(zs[j][k] + t[k] * (zs[j][k + 1] - zs[j][k]))
+
+    own = [z.copy() for z in zs]
+
+    def fixed(i, e, j):
+        """Whether end e of part i keeps its own height when i is held at part j's: an abutment (the road going on
+        on the ground from it) or a joint with another part (that part goes on at i's height there); only an end on
+        j's own deck and on nothing else follows j."""
+        p = pts[i][e]
+        for k in range(n):
+            if k in (i, j) or len(pts[k]) < 2:
+                continue
+            if min(np.hypot(*(pts[k][0] - p)), np.hypot(*(pts[k][-1] - p))) <= 1.0:
+                return True
+        return project(j, p[None])[0] > float(specs[j].width) / 2 + 1.0
 
     for i in range(n):
         if len(pts[i]) < 2:
@@ -2355,16 +2527,26 @@ def _tie_beside(lines, zs, specs):
             if best is None:
                 continue
             _, j, wj = best
+            # (its other end an abutment or a joint: held no nearer it than its ease back to its own profile takes,
+            # its own height there kept. A ramp beside its road the whole way from the fork to its abutment had been
+            # held at the road's height to its very start, 4.9 m over the ground road going on from it (MLK
+            # Boulevard by I-395, Baltimore); another to its joint with the next part, a 6.9 m step there)
+            far = fixed(i, -1 - e, j)
             order = range(len(pts[i])) if e == 0 else range(len(pts[i]) - 1, -1, -1)
             s0 = arcs[i][0 if e == 0 else -1]
             sep, delta = None, 0.0
+            s_far = arcs[i][-1 if e == 0 else 0]
             for k in order:
                 d, zj = project(j, pts[i][k][None])
                 if d - (wi + wj) / 2 >= TIE_JOIN_M:
                     sep = k
                     break
-                if abs(zj - zs[i][k]) > 2.0 + abs(arcs[i][k] - s0) * 0.1:
+                if abs(zj - zs[i][k]) > (TIE_MEASURED_M if measured is not None and measured[i]
+                                         else 2.0 + abs(arcs[i][k] - s0) * 0.1):
                     sep = k                             # (another level: stacked, not side by side)
+                    break
+                if far and abs(s_far - arcs[i][k]) < max(TIE_EASE_MIN_M, abs(zj - own[i][k]) / TIE_EASE_GRADE):
+                    sep = k
                     break
                 delta = zj - zs[i][k]
                 zs[i][k] = zj
@@ -2372,6 +2554,8 @@ def _tie_beside(lines, zs, specs):
                 continue
             ss = arcs[i][sep]
             span = max(TIE_EASE_MIN_M, abs(delta) / TIE_EASE_GRADE)
+            if far:
+                span = min(span, max(abs(s_far - ss), 1e-3))
             for k in order:
                 along = abs(arcs[i][k] - ss)
                 if (e == 0 and k < sep) or (e == -1 and k > sep):
@@ -3971,7 +4155,7 @@ def extras(spec, pts, lon, left_hand=False, country=None, osm=None, ws=None, shi
                 mark("centre", st.centre, lw_, at(off), cpat)
     if plan is None and kind == "paved" and cls in CENTRE_CLASSES \
             and w - (2 * PARKING_M if parked else 0.0) >= st.min_centre_m \
-            and not spec.oneway:   # no paint on cobbles (the width between the parking lanes, edge strips included)
+            and not spec.oneway and not getattr(spec, "mountain", False):     # (a pass road: none, _mountain_roads)   # no paint on cobbles (the width between the parking lanes, edge strips included)
         # the centre line (MUTCD 3B.01-02, TSRGD / RMS / IISR centre lines): too narrow a road has none; four lanes or
         # more get a solid line (the Americas: double solid yellow), and in the US a town's street a double solid one;
         # otherwise one broken line in the country's colour and town / country pattern
@@ -5055,6 +5239,7 @@ class BridgeProfiles:
                 obs[i] = None
         if all(o is None for o in obs):
             return zs
+        measured = self.__dict__.setdefault("_obs_tl", threading.local()).__dict__.setdefault("measured", set())
         target = {}
         for node in deg:
             if deg[node] == 1:
@@ -5091,6 +5276,7 @@ class BridgeProfiles:
                     # pulled a deck through the road under it (-1.8 m over I-95 at Springfield)
                     # (the ends as eased: the parts at a joint keep meeting at one height)
                     zz = np.r_[zz[0], np.maximum(zz, np.minimum(z, o))[1:-1], zz[-1]]
+                    measured.add(comp[k])
             out.append(zz)
         return out
 
@@ -5205,8 +5391,11 @@ class BridgeProfiles:
                         return got
             except Exception as ex:         # (solved here rather than not at all)
                 log.debug("chain %s from its owner: %s: %s", key, type(ex).__name__, ex)
+        tl = self.__dict__.setdefault("_obs_tl", threading.local())
+        tl.measured = set()
         zs = self._solve(comp, pool, ground)
-        zs = _tie_beside([pool[k][1] for k in comp], zs, [pool[k][0] for k in comp])     # (ramps beside their road)
+        zs = _tie_beside([pool[k][1] for k in comp], zs, [pool[k][0] for k in comp],     # (ramps beside their road)
+                         [k in tl.measured for k in comp])
         with self.lock:
             for k, z in zip(comp, zs):
                 spec, xy, lon = pool[k][:3]
@@ -6286,6 +6475,7 @@ def spare_carriageways(mask, parts, cells, frame, cx, cy, square):
 
 
 WALL_STEP = 2.0         # m between a retaining wall's points
+BACK_TOP_OVER_M = 3.0   # m a wall's top may rise over its capped height (grading.wall_max_h) at its back edge
 WALL_PROBE_M = 1.0      # m beyond the cut's foot (grading.WALL_T_M) where the natural ground's height is read
 WALL_TOP_M = 0.15       # m the wall stands over the ground behind it
 WALL_FOOT_M = 0.3       # m it reaches under the road
@@ -6524,6 +6714,9 @@ CLIFF_ROAD_GAP_M = 0.3  # m a piece's footprint keeps from any carriageway
 # rural road (not a motorway / trunk: guardrails there) whose ground falls PARAPET_DROP_M or more within PARAPET_PROBE_M of
 # its edge gets a stone parapet just off its carriageway, not across a road joining it.
 PARAPET_DROP_M = 2.0
+# ... a mountain pass road's from a smaller drop: the Stelvio's parapet runs the whole valley side (_mountain_roads)
+PARAPET_DROP_MOUNTAIN_M = 1.0
+PARAPET_PROBE_MOUNTAIN_M = 5.0  # ... within this (the elevation data smooths its wall-held drop into a slope)
 PARAPET_PROBE_M = 3.0
 PARAPET_H = 0.6
 PARAPET_W = 0.45
@@ -6534,13 +6727,13 @@ CLIFF_MIN_CUT_M = 6.0   # a rural cut this deep: rock faces (cliff_rows), when C
 CLIFF_WALLS_ON = os.environ.get("BNE_CLIFF_WALLS", "off") == "on"
 
 
-def _parapets(xy, z, out_n, rh, inside, steps, gs, others, own, decks):
+def _parapets(xy, z, out_n, rh, inside, steps, gs, others, own, decks, drop_m=None, probe_m=None):
     """The stone parapets along one side of a road (see PARAPET_*): wall dicts as retaining_walls' (roadmesh draws them
     with a back face). gs: the graded ground at steps (m off the centre line) per point. Pure but for decks."""
-    near = np.flatnonzero((steps >= rh + 0.5) & (steps <= rh + PARAPET_PROBE_M))
+    near = np.flatnonzero((steps >= rh + 0.5) & (steps <= rh + (PARAPET_PROBE_M if probe_m is None else probe_m)))
     if not len(near):
         return []
-    drop = (z[:, None] - gs[:, near]).max(axis=1) > PARAPET_DROP_M
+    drop = (z[:, None] - gs[:, near]).max(axis=1) > (PARAPET_DROP_M if drop_m is None else drop_m)
     base = xy + out_n * (rh + PARAPET_OFF_M)
     ok = drop & inside & ~_under_decks(base, z, decks) & ~_on_carriageways(base, others, 0.0)
     # not across a road joining it (its junctions), nor where another road runs beside
@@ -6563,6 +6756,7 @@ def _parapets(xy, z, out_n, rh, inside, steps, gs, others, own, decks):
             out.append({"base": base[sl], "top": z[sl] + PARAPET_H, "foot": np.minimum(z[sl] - 1.0, g_back - 0.3),
                         "toward": -out_n[sl],
                         "thick": np.full(j - i + 1, PARAPET_W), "concrete": False, "rock": False, "parapet": True,
+                        "at": (i, j + 1),
                         "road_z": z[sl]})
         i = j + 1
     return out
@@ -6649,6 +6843,17 @@ def _cut_behind(base, out_n, z, ground):
     return bool(np.median(rise) >= WALL_STEEP)
 
 
+def hairpin_extra(frame, spec, xy):
+    """Per point of a road's line xy (k, 2) in the frame: how much wider than its width / 2 a pass road is there round
+    its widened hairpins (hairpin_tapers on the line itself), or None (not a pass road, no hairpin)."""
+    if not getattr(spec, "mountain", False) or len(xy) < 3:
+        return None
+    la, lo, _ = frame.enu_to_geodetic(xy[:, 0], xy[:, 1], np.zeros(len(xy)))
+    lo, la = np.asarray(lo, np.float64), np.asarray(la, np.float64)
+    ws = taper_widths(spec.width, hairpin_tapers(np.c_[lo, la], spec.width), lo, la)
+    return None if ws is None else (ws - spec.width) / 2
+
+
 def retaining_walls(frame, roads, elev, exact, decks=()):
     """Stone retaining walls along the ground roads cut deeper than grading.WALL_CUT_M into the ground (the grading
     leaves the ground at its natural height right behind them): [dict(base (k, 2) the wall's face line, top (k,),
@@ -6676,7 +6881,7 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
         d = np.gradient(xy, axis=0)
         d /= np.maximum(np.hypot(*d.T), 1e-9)[:, None]
         nl = np.stack([-d[:, 1], d[:, 0]], axis=1)
-        width = max(spec.width, carriageway(spec.cls, spec.kind, True, None, spec.oneway))
+        width = spec.width if spec.mountain else max(spec.width, carriageway(spec.cls, spec.kind, True, None, spec.oneway))
         core = width / 2 + grading.shoulder(spec)
         # (the grading's sharp cuttings end the core sooner; its flat strip behind a wall reaches past the core)
         steps = np.arange(width / 2 + 0.5, core + grading.WALL_FLAT_M + 1.51, 1.0)
@@ -6684,8 +6889,12 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
             probe = xy + nl * side * (core + grading.WALL_FLAT_M + grading.WALL_T_M + WALL_PROBE_M)
             pts_all.append(probe)
             info.append((xy, z, nl * side, core, inside, width / 2, steps, spec.cls in CONCRETE_WALL_CLASSES,
-                         fid, not spec.urban, not spec.urban and spec.cls not in NO_PARAPET_CLASSES and not spec.median,
-                         grading.wall_max_h(spec)))
+                         fid, not spec.urban,
+                         # (parapets: (the drop that gets one, within m of the edge), None none)
+                         ((PARAPET_DROP_MOUNTAIN_M, PARAPET_PROBE_MOUNTAIN_M) if spec.mountain
+                          else (PARAPET_DROP_M, PARAPET_PROBE_M))
+                         if not spec.urban and spec.cls not in NO_PARAPET_CLASSES and not spec.median else None,
+                         grading.wall_max_h(spec), spec.mountain, hairpin_extra(frame, spec, xy)))
     if not pts_all:
         return []
 
@@ -6697,10 +6906,10 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
     # finds no cutting (_wall_runs) and that gets no parapets has no use for them (most of a town's streets: 8 of 9 of
     # the ground lookups, 2026-10-25)
     probes, k = [], 0
-    for xy, z, out_n, core, inside, rh, steps, concrete, fid, rural, parapets, max_h in info:
+    for xy, z, out_n, core, inside, rh, steps, concrete, fid, rural, parapets, max_h, _mtn, _hx in info:
         gg = g[k:k + len(xy)]
         k += len(xy)
-        need = len(steps) and (parapets or _wall_runs(gg - z).any())
+        need = len(steps) and (parapets is not None or _wall_runs(gg - z).any())
         probes.append((gg, need))
     sp = []
     for (xy, z, out_n, core, inside, rh, steps, *_r), (gg, need) in zip(info, probes):
@@ -6711,13 +6920,15 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
     others = {fid: (np.asarray(pts, np.float64)[:, :2], spec.width / 2) for fid, spec, pts, _ in roads if len(pts) >= 2}
     others = _Segs(others)          # (one table for all the carriageway tests below)
     bend_of = {}
-    for (xy, z, out_n, core, inside, rh, steps, concrete, fid, rural, parapets, max_h), (gg, need) in zip(info, probes):
+    for (xy, z, out_n, core, inside, rh, steps, concrete, fid, rural, parapets, max_h, mountain, hx), (gg, need) in \
+            zip(info, probes):
         key = (id(xy), len(xy))
         if key not in bend_of:          # (a tight bend: no wall into it, grading.bend_zone)
             bend_of[key] = grading.bend_zone(xy)
         bends = bend_of[key]
         face = np.full(len(xy), core + 0.1)
         thick = np.full(len(xy), roadmesh.WALL_THICK_M)
+        ground_at = None
         top_g = gg
         if need:                    # the wall where the graded ground starts to climb (a sharp cutting: before the core's edge)
             gs = gsteps[k:k + len(xy) * len(steps)].reshape(len(steps), len(xy)).T
@@ -6740,11 +6951,24 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
             # (and never past where the ground behind falls away again: between a hairpin's legs the bank tops out
             # and drops to the other leg, and the top hung out over that slope, its underside seen from the road
             # above, the Stelvio Pass 2026-10-21)
-            low = (gs < (top_g - WALL_SLAB_DZ)[:, None]) & (steps[None, :] > (face + 1.0)[:, None])
+            # (only past the grading's own flat strip and its climb behind the face, grading.WALL_FLAT_M / WALL_T_M:
+            # that strip at the road's level read as the ground falling away and cut the top to its coping, a trench
+            # between the wall and the slope behind it, "they float in front of the terrain", the user 2026-10-31)
+            low = (gs < (top_g - WALL_SLAB_DZ)[:, None]) & (steps[None, :] > np.maximum(
+                face + 1.0, core + grading.WALL_FLAT_M + grading.WALL_T_M)[:, None])
             reach = np.where(low.any(axis=1), steps[np.argmax(low, axis=1)] - face, np.inf)
             thick = np.minimum(thick, np.maximum(reach - 0.5, WALL_COPING_MIN_M))
-        if parapets and need:
-            out.extend(_parapets(xy, z, out_n, rh, inside, steps, gs, others, fid, decks))
+            # the graded ground at the top's back edge (the steps', then the probe's: back_top)
+            pd = core + grading.WALL_FLAT_M + grading.WALL_T_M + WALL_PROBE_M
+            ground_at = lambda d, idx: np.array([np.interp(d[n], np.r_[steps, pd], np.r_[gs[m], gg[m]])  # noqa: E731
+                                                 for n, m in enumerate(idx)])
+        if parapets is not None and need:
+            par = _parapets(xy, z, out_n, rh, inside, steps, gs, others, fid, decks, *parapets)
+            if hx is not None:          # (round a widened hairpin: at its edge there, hairpin_extra)
+                for w_ in par:
+                    a_, b_ = w_["at"]
+                    w_["base"] = w_["base"] + out_n[a_:b_] * hx[a_:b_, None]
+            out.extend(par)
         full = _wall_runs(gg - z) & ~_under_decks(xy + out_n * core, z, decks) & ~bends
         # (no face standing on a carriageway: a hairpin's other leg, the same road, the Stelvio Pass 2026-10-21)
         full &= ~_on_carriageways(xy + out_n * face[:, None], others, 0.0)
@@ -6777,7 +7001,14 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
                 # (rock faces only as an experiment, BNE_CLIFF_WALLS=on, for tall rural cuts: the Stelvio's hairpins are
                 # walled in dry stone, tall cuts too, Mapillary 2026-10-21; the user chose stone walls for passes)
                 tall = CLIFF_WALLS_ON and float(np.max(top_g[sl] - z[sl])) > CLIFF_MIN_CUT_M
-                out.append({"base": base, "top": np.maximum(tp, z[sl] + WALL_TAPER_LOW_M), "foot": z[sl] - WALL_FOOT_M,
+                top = np.maximum(tp, z[sl] + WALL_TAPER_LOW_M)
+                # (its top behind the coping rises to the graded ground at its back edge, never under the coping: the
+                # slope above goes on from the wall's top, held up by it; flat at the top's height, a band of grass
+                # standing out in front of the slope read as a thick freestanding wall, the user 2026-10-31)
+                back_top = top if ground_at is None else np.maximum(top, np.minimum(
+                    ground_at(face[sl] + th, range(i, j + 1)), z[sl] + max_h + BACK_TOP_OVER_M))
+                out.append({"base": base, "top": top, "back_top": back_top, "foot": z[sl] - WALL_FOOT_M,
+                            "mountain": bool(mountain),
                             "toward": -out_n[sl], "thick": th, "concrete": concrete, "rock": rural and tall,
                             "road_z": z[sl], "clear": _clear_depth(base, out_n[sl], np.full(len(base), CLIFF_REACH_M),
                                                                    others, fid),
