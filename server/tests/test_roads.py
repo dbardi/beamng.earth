@@ -1045,11 +1045,11 @@ class TrackerTest(unittest.TestCase):
 
 
 class PaintRoadsTest(unittest.TestCase):
-    def grid(self, n=128):
+    def grid(self, n=128, sq=2.0):
         rows = np.arange(n)[:, None]
         cols = np.arange(n)[None, :]
-        lat = LAT + (n / 2 - rows) * 2 / M_LAT + np.zeros((1, n))
-        lon = LON + (cols - n / 2) * 2 / M_LON + np.zeros((n, 1))
+        lat = LAT + (n / 2 - rows) * sq / M_LAT + np.zeros((1, n))
+        lon = LON + (cols - n / 2) * sq / M_LON + np.zeros((n, 1))
         return lat, lon
 
     def test_affine(self):
@@ -1072,21 +1072,23 @@ class PaintRoadsTest(unittest.TestCase):
 
     def test_bare_verge_beside_roads(self):
         """Grass tufts stood on the asphalt along road edges (the user, 2026-10-20): a road without sidewalks gets a
-        bare verge (VERGE_M a side) where the ground carries grass; rock stays rock."""
-        lat, lon = self.grid()
+        bare verge (VERGE_M a side) where the ground carries grass; rock stays rock. On the block's 1 m samples, each
+        tested at the centre of the square north-east of it (its square's material in the engine)."""
+        lat, lon = self.grid(sq=1.0)
         f = features([[(-200, 0), (200, 0)]], ["residential"])
-        out = sf.paint_roads(np.full(lat.shape, sf.GRASS, np.uint8), lat, lon, [f], 2.0)
+        out = sf.paint_roads(np.full(lat.shape, sf.GRASS, np.uint8), lat, lon, [f], 1.0)
         col = [int(v) for v in out[:, 10]]
-        self.assertEqual(col[64 - 2], sf.ASPHALT, "4 m north: the 8 m road's edge, painted")
-        self.assertEqual(col[64 + 2], sf.ASPHALT, "4 m south: likewise (centred, not half a sample off)")
-        self.assertEqual((col[64 - 3], col[64 + 3]), (sf.VERGE, sf.VERGE), "6 m either side: the verge")
-        self.assertEqual(col[64 - 6], sf.GRASS, "12 m north: grass again")
-        rock = sf.paint_roads(np.full(lat.shape, sf.ROCK, np.uint8), lat, lon, [f], 2.0)
-        self.assertEqual(int(rock[64 - 3, 10]), sf.ROCK)
+        # (the squares whose centres lie exactly ROAD_EDGE_M past the edges, 4-5 m out, are left out: on the line)
+        self.assertEqual(col[64 - 3], sf.ASPHALT, "the square 3-4 m north: the 8 m road's edge, painted")
+        self.assertEqual(col[64 + 4], sf.ASPHALT, "the square 3-4 m south: likewise (centred, not half a sample off)")
+        self.assertEqual((col[64 - 5], col[64 + 6]), (sf.VERGE, sf.VERGE), "5-6 m either side: the verge")
+        self.assertEqual((col[64 - 6], col[64 + 7]), (sf.GRASS, sf.GRASS), "6-7 m either side: grass again")
+        rock = sf.paint_roads(np.full(lat.shape, sf.ROCK, np.uint8), lat, lon, [f], 1.0)
+        self.assertEqual(int(rock[64 - 5, 10]), sf.ROCK)
         f9 = features([[(-200, 0), (200, 0)]], ["residential"], widths=[(0, 9.0)])
-        out9 = sf.paint_roads(np.full(lat.shape, sf.GRASS, np.uint8), lat, lon, [f9], 2.0)
+        out9 = sf.paint_roads(np.full(lat.shape, sf.GRASS, np.uint8), lat, lon, [f9], 1.0)
         n = int((out9[:, 10] == sf.ASPHALT).sum())
-        self.assertGreaterEqual(n * 2.0, 9.0, "a 9 m road painted at least 9 m wide (was 8)")
+        self.assertGreaterEqual(n * 1.0, 9.0, "a 9 m road painted at least 9 m wide (was 8)")
 
     def test_cobbles_under_the_tyres(self):
         lat, lon = self.grid()

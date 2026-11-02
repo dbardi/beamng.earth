@@ -316,7 +316,6 @@ def build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name, ter_name=None,
         return z
     import roads as roadsmod
     plan_ahead(g, frame, cx, cy, size * heightmap.SQUARE / 2)
-    raw = lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, hm_zoom))     # noqa: E731
     gen = elev
     if ter_name is not None and getattr(_s, "md", None) is not None:
         t1 = time.perf_counter()
@@ -375,12 +374,6 @@ def build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name, ter_name=None,
     if ter_name is not None:
         t1 = time.perf_counter()
         idx = _tunnel_holes(aid, frame, elev, keep, cx, cy, idx, info, g)
-        import finepatch            # (sharp graded ground: holes here, a finer mesh beside the .ter fills them)
-        idx = finepatch.apply(frame, gen, raw, keep, cx, cy, size, out_dir, ter_name[:-4] + "_fine", aid, idx, info)
-        if info.get("fine"):        # (its own share of the "ter" stage)
-            f = info["fine"]
-            log.info("block (%s, %s, %s): fine ground %d cells, %d triangles in %.2f s (%s)", aid, cx, cy,
-                     f.get("cells", 0), f.get("tris", 0), f.get("seconds", 0.0), f.get("times"))
         info["ter"], mats = surfacemod.write_ter(out_dir, ter_name, keep["qgrid"], idx)
         if mats is not None:          # the .ter's own material list (MATERIALS indices)
             info["mats"] = mats

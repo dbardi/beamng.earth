@@ -22,7 +22,7 @@ import test_server  # noqa: E402
 from test_server import LAT, LON, FakeDem, ServerHarness  # noqa: E402
 from netclient import FarState  # noqa: E402
 
-LAYOUT = ff.Layout(64, 512, True)
+LAYOUT = ff.Layout(64, 1024, True)
 
 
 class SelectTest(unittest.TestCase):
@@ -56,7 +56,7 @@ class DetailServerTest(ServerHarness):
     near_visual = "detail"
     with_imagery = True
     cells = 64
-    block = 512
+    block = 1024
 
     def test_detail_session(self):
         c = self.c
@@ -123,7 +123,7 @@ class DetailBaseRefreshTest(ServerHarness):
     near_visual = "detail"
     with_imagery = True
     cells = 64
-    block = 512
+    block = 1024
 
     def setUp(self):
         super().setUp()
@@ -165,7 +165,7 @@ class DetailQuickPhotoTest(ServerHarness):
     near_visual = "detail"
     with_imagery = True
     cells = 64
-    block = 512
+    block = 1024
 
     def test_quick_skips_missing_map_data(self):
         self.hello()
@@ -200,7 +200,7 @@ class DetailFastPhotoLaterTest(ServerHarness):
     near_visual = "detail"
     with_imagery = True
     cells = 64
-    block = 512
+    block = 1024
 
     def _slow_block(self, speed, fast=True, photo_s=1.0, held_s=0.95):
         self.hello()
@@ -257,7 +257,7 @@ class DetailNoImageryTest(ServerHarness):
     near_visual = "detail"
     with_imagery = False
     cells = 64
-    block = 512
+    block = 1024
 
     def test_no_imagery_no_base(self):
         """Without imagery the terrain has no base (the mod keeps the level's flat base)."""

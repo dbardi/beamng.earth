@@ -158,10 +158,11 @@ CLI_CELLS_MESH = 64
 
 
 def resolve_block(block, near_visual):
-    """The --block value to use: the given one, else 512 in mesh mode and 1024 in terrain mode."""
+    """The --block value to use: the given one, else CLI_BLOCK_MESH (1 km) in mesh / detail mode and TERRAIN_BLOCK
+    (its frozen 2 km block) in terrain mode."""
     if block is not None:
         return block
-    return CLI_BLOCK_MESH if near_visual in MESH_LAYOUT else heightmap.SIZE
+    return CLI_BLOCK_MESH if near_visual in MESH_LAYOUT else TERRAIN_BLOCK
 
 
 def resolve_colormatch(mode, chain):
@@ -383,18 +384,21 @@ class FollowRule:
         return self.lead, self.reach, 0.0
 
 
-# docs/V1_4_SPEC.md §3.5 (M4): the 512² block (collidable [c-512, c+510]) on a 128 m grid: prepare at
-# 128 m, lead 5 s (was 2: 2026-10-15, fewer moves), reach 510 - 250 = 260 m; fast mode above 150 m/s: lead 3 s, reach 510 - 90 = 420 m,
-# prepare test 0.75 s ahead; the prefetch starts 28 m before the prepare distance.
+# By the block's width in metres (heightmap.grid): docs/V1_4_SPEC.md §3.5 (M4): the 1 km block (collidable
+# [c-512, c+510] at 2 m, c+511 at 1 m) on a 128 m grid: prepare at 128 m, lead 5 s (was 2: 2026-10-15, fewer moves),
+# reach 510 - 250 = 260 m; fast mode above 150 m/s: lead 3 s, reach 510 - 90 = 420 m, prepare test 0.75 s ahead; the
+# prefetch starts 28 m before the prepare distance. 2 km: the v1.3.1 block.
 FOLLOW_RULES = {
-    1024: FollowRule(heightmap.GRIDS[1024], FOLLOW_PREPARE, FOLLOW_LEAD, FOLLOW_REACH, PREFETCH_START),
-    512: FollowRule(heightmap.GRIDS[512], 128.0, 5.0, 260.0, 100.0,
-                    fast_v=150.0, fast_lead=3.0, fast_reach=420.0, fast_ahead=0.75, min_lead=256.0),
+    2048.0: FollowRule(heightmap.GRID_BY_M[2048.0], FOLLOW_PREPARE, FOLLOW_LEAD, FOLLOW_REACH, PREFETCH_START),
+    1024.0: FollowRule(heightmap.GRID_BY_M[1024.0], 128.0, 5.0, 260.0, 100.0,
+                       fast_v=150.0, fast_lead=3.0, fast_reach=420.0, fast_ahead=0.75, min_lead=256.0),
 }
+BLOCK_SIZES = tuple(int(m / heightmap.SQUARE) for m in sorted(FOLLOW_RULES))    # samples per edge (1024, 2048)
+TERRAIN_BLOCK = farfield.TERRAIN_BLOCK     # terrain mode's frozen 2 km block
 BLOCK_DEFAULT = 1024        # Server()'s block (test_v131_default.py pins the library default)
-# The command line's block in mesh mode: M4's 512² block (in-game 2026-10-10: P2 steady import 16 ms vs
-# 45 ms, P7, P11 and the 134 m/s drive passed; docs/research/2026-10-10-m4-m1h-ingame.md)
-CLI_BLOCK_MESH = 512
+# The command line's block in mesh mode: 1 km (M4: in-game 2026-10-10, the 512² block at 2 m; since 2026-11-01 the
+# same kilometre at 1 m, 1024² samples: the stock maps' resolution, a .ter swap of ~29 ms on the Stelvio)
+CLI_BLOCK_MESH = 1024
 # |cx|,|cy| of an anchor's first terrain. A rebase hint stays within ~512 m of the new origin, but
 # a resync (same origin, after a server restart) asks for the block around the player, which can be
 # up to the mod's maximum rebase distance (16 km) away, plus however far the player got past it.
@@ -534,7 +538,8 @@ class TileInfo:
     frame: tuple | None = None  # a global tile's frame (lat, lon): its geometry is in that frame's world
 
 
-def predict_centre(px, py, vx, vy, lead, reach=FOLLOW_REACH, grid=heightmap.GRID, min_lead=0.0, min_lead_v=2.0):
+def predict_centre(px, py, vx, vy, lead, reach=FOLLOW_REACH, grid=heightmap.GRID_BY_M[2048.0], min_lead=0.0,
+                   min_lead_v=2.0):
     """snap256(p + v*lead) (M4: the block's grid), the lead at least min_lead metres while moving (follow.lua's
     MIN_LEAD), clamped so p stays within `reach` of the centre on both axes."""
     lx, ly = vx * lead, vy * lead
@@ -551,7 +556,7 @@ def predict_centre(px, py, vx, vy, lead, reach=FOLLOW_REACH, grid=heightmap.GRID
     return tuple(out)
 
 
-def predict_request(px, py, vx, vy, cx, cy, rule=FOLLOW_RULES[1024]):
+def predict_request(px, py, vx, vy, cx, cy, rule=FOLLOW_RULES[2048.0]):
     """The centre the mod will ask for (V1_1_SPEC 4 prefetch): where a player moving
     straight at (vx, vy) leaves the FOLLOW_PREPARE box around the block centre, then the
     mod's own target rule there. (Spec 4 suggests snap256(p + v*6 s); predicting the mod's
@@ -628,7 +633,7 @@ class Server:
                  hysteresis=farfield.HYSTERESIS, radius=farfield.RADIUS, far_format="cdae",
                  imagery=imagerymod.DEFAULT_CHAIN, near_visual="mesh", tex_near=TEX_NEAR, tex_far=TEX_FAR,
                  tone=1.0, near_radii=None, status_interval=STATUS_INTERVAL, cells=CELLS_DEFAULT, tex=None,
-                 block=BLOCK_DEFAULT, horizon=False, deshadow="off", weather=None, gravity=None, net=None,
+                 block=None, horizon=False, deshadow="off", weather=None, gravity=None, net=None,
                  colormatch="off", credits=None, cache=None, retex_rate=RETEX_RATE, surface=None,
                  mapdata=None, grading=False, road_widths=False, block_pools=(), sidewalks=True, buildings=False, traffic=False, far_pool=None,
                  road_pool=None, airports_db=None, sea=None, vegetation=None, leaf_on=True, season_mode="off",
@@ -680,8 +685,10 @@ class Server:
         if tex is None and cells == 32:
             tex = (tex_near, tex_near, tex_far)         # the v1.3.1 rule: the two finest levels are near
         # Every layout-dependent rule reads self.layout (terrain mode: frozen at 32 cells)
+        if block is None:               # BLOCK_DEFAULT; terrain mode: its frozen 2 km block
+            block = BLOCK_DEFAULT if near_visual in MESH_LAYOUT else TERRAIN_BLOCK
         self.layout = farfield.Layout(cells, block, near_visual in MESH_LAYOUT, tex)
-        self.follow = FOLLOW_RULES[self.layout.block]     # the mod's terrain-follow table for this block
+        self.follow = FOLLOW_RULES[self.layout.block * heightmap.SQUARE]     # the mod's terrain-follow table for its block
         self.min_level = self.layout.min_level
         # the finest level under a drawn block's forced box (detail: L-1, whose 128 m edges meet the 512²
         # block's 128 m-grid edges; terrain: L0 under the 256 m-grid 1024² block)
@@ -2141,10 +2148,6 @@ class Server:
             info["roadsComplete"] = roads_complete
         if not provisional:
             idx = self._tunnel_holes(anchor, elev, keep, cx, cy, idx, info)
-            import finepatch        # (sharp graded ground: holes here, a finer mesh beside the .ter fills them)
-            raw = lambda la, lo: self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, anchor.hm_zoom))  # noqa: E731
-            idx = finepatch.apply(anchor.frame, gen, raw, keep, cx, cy, self.layout.block, self.out_dir,
-                                  self.ter_name((anchor.id, cx, cy))[:-4] + "_fine", anchor.id, idx, info)
         info["ter"], mats = surfacemod.write_ter(self.out_dir, self.ter_name((anchor.id, cx, cy)), keep["qgrid"], idx)
         if mats is not None:          # the .ter's own material list (MATERIALS indices)
             info["mats"] = mats
@@ -2705,8 +2708,6 @@ class Server:
                 self._remove(os.path.join(self.out_dir, info["base"]))
             if info.get("ter"):
                 self._remove(os.path.join(self.out_dir, info["ter"]))
-            for p in (info.get("fine") or {}).get("parts", ()):     # (its fine ground's pieces)
-                self._remove(os.path.join(self.out_dir, p["shape"]))
             if self.near_visual == "detail":     # its packed copies in the game's terrain texture cache
                 for name in {self.base_name(key), info.get("base") or self.base_name(key)}:
                     for px in BASE_SIZES:       # (whichever size it was made at)
@@ -4268,8 +4269,9 @@ class Connection:
                 m["otherCredits"] = self.s.attribution_rest()
             if lay.format >= 4:         # M1: the tiles' cell count (crossover.defaultErr, the exact level)
                 m["cells"] = lay.cells
-            if lay.block != heightmap.SIZE:     # M4: the terrain block size (the mod's lattice / follow table)
-                m["blockSize"] = lay.block
+            # the terrain block: samples per edge and their spacing (the mod's lattice / follow table, by its width in
+            # metres: 1024 x 1 m since 2026-11-01)
+            m["blockSize"], m["squareSize"] = lay.block, heightmap.SQUARE
             if self.s.horizon:                  # M1h: status.radius follows; the mod sets its sky and view distance
                 m["horizon"] = True
             if self.s.deshadow is not None:     # --deshadow lambert|full: shown on the mod's settings page
@@ -4574,18 +4576,6 @@ class Connection:
             out["baseSize"] = self.s.layout.block * heightmap.SQUARE
         if info.get("ter"):         # the same block as the engine's terrain file (swapped in, no import)
             out["ter"] = f"{self.s.vfs_dir}/{info['ter']}"
-        if info.get("fine"):        # its fine ground's pieces (finepatch.py: the .ter's holes filled by them)
-            f = info["fine"]
-            parts = [{**p, "shape": f"{self.s.vfs_dir}/{p['shape']}"} for p in f["parts"]]
-            # (as pooled shape paths, slot_<n>: ~75 new shapes a block, each distinct path a cost for the rest of the
-            # game's session, teleport-degradation; the mod reports each slot gone with its object, pose.slotsGone)
-            pool = getattr(self.s, "pool_shapes", None)
-            slots = pool(self, {str(i): p["shape"] for i, p in enumerate(f["parts"])}) if pool else {}
-            for i, p in enumerate(parts):
-                sl = slots.get(str(i))
-                if sl:
-                    p["shape"], p["slot"] = sl[0], sl[1]
-            out["fine"] = {"materials": f["materials"], "bank": f["bank"], "parts": parts}
         return out
 
     async def prepare_anchor(self, msg):
@@ -6214,10 +6204,9 @@ def main():
     ap.add_argument("--cells", type=int, choices=farfield.CELL_COUNTS, default=None,
                     help="tile cells per edge: 64 = docs/V1_4_SPEC.md M1 (FORMAT 4, exact level L-1; the "
                          "default in mesh mode), 32 = the v1.3.1 layout (FORMAT 3; terrain mode always)")
-    ap.add_argument("--block", type=int, choices=tuple(FOLLOW_RULES), default=None,
-                    help="terrain block samples per edge: 512 = docs/V1_4_SPEC.md M4 (on a 128 m grid, "
-                         "hello.blockSize; mesh mode only; the default in mesh mode), 1024 = the v1.3.1 block "
-                         "(terrain mode always)")
+    ap.add_argument("--block", type=int, choices=BLOCK_SIZES, default=None,
+                    help="terrain block samples per edge (heightmap.SQUARE apart, 1 m): 1024 = 1 km on a 128 m grid "
+                         "(the default), 2048 = 2 km on a 256 m grid (mesh mode only)")
     ap.add_argument("--horizon", action=argparse.BooleanOptionalAction, default=None,
                     help="docs/V1_4_SPEC.md M1h: the far field out to the line-of-sight horizon (a disc up to "
                          "1500 km from the eye's height above sea level and the terrain in sight, L10 tiles, "
@@ -6359,8 +6348,8 @@ def main():
     args.colormatch = resolve_colormatch(args.colormatch, args.imagery)
     if args.cells != 32 and args.near_visual not in MESH_LAYOUT:
         ap.error("--cells 64 needs --near-visual mesh (terrain mode is frozen at the v1.3.1 layout)")
-    if args.block != heightmap.SIZE and args.near_visual not in MESH_LAYOUT:
-        ap.error("--block 512 needs --near-visual mesh (terrain mode is frozen at the v1.3.1 layout)")
+    if args.block != TERRAIN_BLOCK and args.near_visual not in MESH_LAYOUT:
+        ap.error(f"--block {args.block} needs --near-visual mesh (terrain mode is frozen at its layout)")
     if args.horizon and args.near_visual not in MESH_LAYOUT:
         ap.error("--horizon needs --near-visual mesh (terrain mode is frozen at the v1.3.1 layout)")
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,

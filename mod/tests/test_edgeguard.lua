@@ -12,7 +12,8 @@ local S = dofile(dir .. '/stubs.lua')
 local edgeguard = require('beamngEarth/edgeguard')
 local lattice = require('beamngEarth/lattice')
 
-lattice.configure(512)
+lattice.configure(512, 2.0)
+require('beamngEarth/follow').configure()
 local BOX = { lattice.groundBox(0, 0) } -- [-512, 510]
 T.check(BOX[1] == -512 and BOX[3] == 510, '512 block: collidable [c-512, c+510]')
 local GROUND_Z = 100

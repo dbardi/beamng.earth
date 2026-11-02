@@ -39,7 +39,8 @@ M.FAST_V_1024 = 1e9                          -- no fast mode
 -- 512² (M4)
 M.GRID_512 = 128
 M.PREPARE_DIST_512 = 128
-M.COMMIT_DIST_512 = 192
+M.COMMIT_DIST_512 = 256    -- (192 at 2 m: the 1 m block (2026-11-01) takes ~4x as long to build; 128 m of travel
+                           -- between asking and needing it instead of 64, the hard commit and edge unchanged)
 -- The next block's centre at least MIN_LEAD ahead of a moving player (M.target): at town speeds LOOKAHEAD_S put it one
 -- grid step ahead, a move every 128 m, each a ~50 ms frame and a redraw of the sun's shadow map on a Steam Deck
 -- (2026-10-23, 17 of 21 such redraws on a Baltimore drive); 256 m halves the moves at 16-67 mph, the player still
@@ -86,11 +87,13 @@ M.RETRY_S = 5                  -- wait after a terrain_error before asking again
 M.REACH = M.REACH_1024
 local REACH = M.REACH
 
--- The session's block size (1024 or 512; anything else: 1024): the active table and every value
--- derived from the lattice. Returns the size in use.
-function M.configure(size)
-  local n = (size == 512) and 512 or 1024
-  local t = n == 512 and '_512' or '_1024'
+-- The session's block (after lattice.configure), by its width: 2 km the *_1024 table (named for the v1.3.1 1024² at
+-- 2 m), 1 km the *_512 one (512² at 2 m, 1024² at 1 m since 2026-11-01); every value derived from the lattice.
+-- Returns the size in use.
+function M.configure()
+  local n = lattice.N
+  local t = lattice.WIDTH >= 2048 and '_1024' or '_512'
+  M.SQUARE_SIZE = lattice.SQUARE
   M.SIZE, M.HALF = n, n * M.SQUARE_SIZE / 2
   M.GRID, M.PREPARE_DIST, M.COMMIT_DIST = M['GRID' .. t], M['PREPARE_DIST' .. t], M['COMMIT_DIST' .. t]
   M.MIN_LEAD = M['MIN_LEAD' .. t]
@@ -305,5 +308,7 @@ function M.thresholds(px, py, cx, cy)
   local d = M.cheb(px, py, cx, cy)
   return M.PREPARE_DIST - d, M.COMMIT_DIST - d, d
 end
+
+M.configure()      -- (the default block, lattice's: 1024 x 1 m, the 1 km table)
 
 return M
