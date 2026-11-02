@@ -355,6 +355,11 @@ function M.setGroupEnabled(groups, on)
 end
 
 -- Pure: the n-th pool Forest's name.
+-- (tests: .claude/devtools/floattrees.py reads the tiles' made items and their Forests' transforms)
+function M.debugTiles() return tiles end
+-- Does geotile tileKey (onGeoRows' key: 'p' / 'g' .. its geotile key) have its rows here?
+function M.hasGeo(tileKey) return tiles['g:' .. tostring(tileKey)] ~= nil end
+
 function M.forestName(n)
   return M.FOREST_NAME .. '_' .. tostring(n)
 end
@@ -1037,8 +1042,10 @@ function M.update(anchorId, player, view, frameMs)
     local want = tileThreshold(o[2], t)
     local band = groupBand(t, o[2])
     local near = o[3] <= M.SOLID_M or (t.near and o[3] <= M.SOLID_M + M.SOLID_HYST_M) or nearFocus(t) or false
-    if near and t.moved then
-      -- a moved geotile that must collide: its items made again at its placement first (the first loop, next pass)
+    if t.moved then
+      -- a moved geotile: its items made again at its placement (the first loop, next pass). Near, it must collide;
+      -- far, the engine draws its items' distant impostors without the Forest's transform: a rebase's 767 m shift
+      -- left whole tiles of rocks and shrubs floating over the valley as specks (the user, 2026-11-01)
       t.flush = true
       dirty = true
       goto nexttile
