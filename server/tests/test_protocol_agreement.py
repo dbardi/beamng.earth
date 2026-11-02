@@ -124,7 +124,9 @@ MOD_TO_SERVER = {
              # pooled far-tile slots whose far_tile's object is gone: [[slot, serial], ...] (matslots.py)
              "slotsGone": F((list, dict), OPT),
              # other vehicles' collision foci [{x, y, r, trees}] (collisionfoci.lua; earthd parse_foci)
-             "foci": F((list, dict), OPT)},
+             "foci": F((list, dict), OPT),
+             # the edge guard holds the car for its ground (earthd Connection.hold_boost: every core meanwhile)
+             "guardHold": F(bool, OPT)},
     # the download cache (cache.py; additive): the page's size cap (GB, 0 = unlimited), a clear, or
     # neither (fresh usage numbers); always answered with a 'cache'
     "cache": {"capGb": F(NUM, OPT), "clear": F(bool, OPT)},
@@ -677,6 +679,8 @@ class ConstantsTest(unittest.TestCase):
         # the player stays >= EDGE_MARGIN inside the collidable [cx-512, cx+511] on both sides
         self.assertLessEqual(T["REACH"], L_VALID_EDGE - T["EDGE_MARGIN"])
         self.assertLessEqual(earthd.ANCHOR_CENTRE_MAX, modsim.REBASE["MAX_DISTANCE"] + 5000)
+        # (the server skips a prefetch the mod would replace with a built block: Connection.ready_will_do)
+        self.assertEqual(earthd.READY_STEPS, F["READY_STEPS"])
 
     def test_follow_tables_per_block_size(self):
         """M4 (docs/V1_4_SPEC.md §3.5): the server's predicted follow rule per block width is the mod's

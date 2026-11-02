@@ -1051,10 +1051,15 @@ local function onMessage(msg)
     -- A refresh for an anchor not committed yet is kept for the commit: a cached place's graded block came 1 s after
     -- the provisional one while the teleport's commit waited out a 1.9 s level-load frame, and the provisional block
     -- (no road grading, ground through the roads) stayed until the car drove off (BeamMP join, 2026-10-24)
+    -- A follow block sent provisional too (server provisional_follow: its road plans late, a first visit's cells;
+    -- 2026-11-01): the graded one for the block about to be committed replaces it in the pending request.
+    local p = st.terrainPending
     if msg.anchorId ~= st.anchorId then
       st.refreshLater = msg
     elseif st.block and msg.cx == st.block.cx and msg.cy == st.block.cy and msg.size == terrain.SIZE then
       if windowMinimized() then st.deferredRefresh = msg else commitTerrain(msg) end
+    elseif p and p.ready and p.msg and msg.cx == p.cx and msg.cy == p.cy and msg.size == terrain.SIZE then
+      p.msg = msg
     end
   elseif t == 'terrain_error' then
     local p = st.terrainPending
@@ -1451,6 +1456,8 @@ local function updateWorld(dt)
       sessions = roads.allHeldSessions(),
       slotsGone = slotsGoneNow(), -- pooled shape slots let go (server/matslots.py)
       foci = poseFoci(),          -- other vehicles' collision islands (collisionfoci.lua; earthd parse_foci)
+      -- the edge guard holds the car for its ground: the server takes every core meanwhile (earthd hold_boost)
+      guardHold = st.guard.mode == 'hold' or nil,
       cam = c and { x = c.x, y = c.y, z = c.z, fx = c.fx, fy = c.fy, fz = c.fz, fovDeg = c.fovDeg, h = c.h } or nil })
   end
 
@@ -1538,12 +1545,13 @@ local function updateWorld(dt)
   -- commit gating: the far tiles of the strip the move uncovers must be live, and no coarse tile
   -- may straddle the new block (design 2.3, farfield.uncoverReady)
   local gate = b and function(ncx, ncy) return farfield.uncoverReady(b.cx, b.cy, ncx, ncy) end
-  local fa, tx, ty = follow.decide(pl.x, pl.y, pl.vx, pl.vy, b and b.cx, b and b.cy, st.terrainPending,
+  local fa, tx, ty, preferred = follow.decide(pl.x, pl.y, pl.vx, pl.vy, b and b.cx, b and b.cy, st.terrainPending,
     st.clock, st.terrainRetryAt, gate, st.terrainLatency)
   if fa == 'prepare' then
     if net.isConnected() and anchorKnown() then
       local id = nextId()
-      st.terrainPending = { requestId = id, anchorId = st.anchorId, cx = tx, cy = ty, sentAt = st.clock }
+      st.terrainPending = { requestId = id, anchorId = st.anchorId, cx = tx, cy = ty, sentAt = st.clock,
+        preferred = preferred }
       net.send({ type = 'prepare_terrain', requestId = id, anchorId = st.anchorId, cx = tx, cy = ty })
     end
   elseif fa == 'commit' then
@@ -1614,6 +1622,7 @@ local function updateGuard()
   -- if the next block is late (a first visit, a busy server) the car is paused at the edge of the collidable ground
   -- instead of driving off it; normally the block follows long before (the pause needs the edge within PAUSE_LEAD_S).
   g.healthy = serverHealthy()
+  g.warnCap = g.healthy and follow.warnCap() or nil    -- (the block follows: warned only when it is late)
   if not g.pausedByUs and (guardFailed or st.placeFrames or st.paused) then
     g.mode = 'off'
     return
