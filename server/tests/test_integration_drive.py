@@ -436,12 +436,14 @@ class DriveBase(unittest.TestCase):
         self.user = self.tmp.name
         self.errlog = open(os.path.join(self.user, "earthd.log"), "w+")
         script = SERVER_DIR / self.launcher if self.launcher == "earthd.py" else Path(__file__).parent / self.launcher
+        # the desktop budget: on a machine under budget.SMALL_GB the server caps the far tiles' textures at
+        # budget.SMALL_FAR_TEX, and the checks below expect farfield's desktop sizes
         self.proc = subprocess.Popen(
             [sys.executable, str(script), "--port", "0", "--user-dir", self.user, "--cache-dir", CACHE,
              "--weather", "off", "--gravity", "off", "--update-check", "off",  # no network: own tests
              # roads (and the grading under them) wait on Overture road data per block: own tests
              "--roads", "off", *self.server_args],
-            stdout=subprocess.PIPE, stderr=self.errlog, text=True)
+            stdout=subprocess.PIPE, stderr=self.errlog, text=True, env=dict(os.environ, BNGE_BUDGET="desktop"))
         self.addCleanup(stop_server, self.proc)     # a failed start too: no server or workers left behind
         line = self.proc.stdout.readline()
         self.assertIn("listening on 127.0.0.1:", line)
