@@ -41,6 +41,10 @@ M.GRID_512 = 128
 M.PREPARE_DIST_512 = 128
 M.COMMIT_DIST_512 = 256    -- (192 at 2 m: the 1 m block (2026-11-01) takes ~4x as long to build; 128 m of travel
                            -- between asking and needing it instead of 64, the hard commit and edge unchanged)
+-- Above COMMIT_FAST_V, 256 m leaves the commit-time re-check too little time on a diagonal: a block aimed only along
+-- the minor axis would be committed late and replaced 0.33 s later (offline model, 134 m/s).
+M.COMMIT_DIST_FAST_512 = 192
+M.COMMIT_DIST_FAST_1024 = M.COMMIT_DIST_1024
 -- The next block's centre at least MIN_LEAD ahead of a moving player (M.target): at town speeds LOOKAHEAD_S put it one
 -- grid step ahead, a move every 128 m, each a ~50 ms frame and a redraw of the sun's shadow map on a Steam Deck
 -- (2026-10-23, 17 of 21 such redraws on a Baltimore drive); 256 m halves the moves at 16-67 mph, the player still
@@ -73,6 +77,8 @@ M.HALF = lattice.HALF          -- block SW corner = centre - HALF
 M.GRID = M.GRID_1024           -- block centres snap to this grid
 M.PREPARE_DIST = M.PREPARE_DIST_1024         -- Chebyshev distance player -> centre that requests a new terrain
 M.COMMIT_DIST = M.COMMIT_DIST_1024           -- ... that commits a ready one (once its uncovered strip is live)
+M.COMMIT_DIST_FAST = M.COMMIT_DIST_FAST_1024 -- ... above COMMIT_FAST_V (m/s)
+M.COMMIT_FAST_V = math.huge
 M.MIN_LEAD = M.MIN_LEAD_1024
 M.HARD_COMMIT_DIST = M.HARD_COMMIT_DIST_1024 -- ... that commits a ready one regardless (still >= 320 m from the edge)
 M.EDGE_MARGIN = M.EDGE_MARGIN_1024           -- the new centre keeps the player at least this far from every edge
@@ -99,8 +105,23 @@ function M.configure()
   M.MIN_LEAD = M['MIN_LEAD' .. t]
   M.HARD_COMMIT_DIST, M.EDGE_MARGIN, M.REACH = M['HARD_COMMIT_DIST' .. t], M['EDGE_MARGIN' .. t], M['REACH' .. t]
   M.LOOKAHEAD_S, M.RECHECK_S, M.FAST_MODE_V = M['LOOKAHEAD_S' .. t], M['RECHECK_S' .. t], M['FAST_V' .. t]
+  M.COMMIT_DIST_FAST, M.COMMIT_FAST_V = M['COMMIT_DIST_FAST' .. t], M.commitFastSpeed()
   REACH = M.REACH
   return n
+end
+
+-- The speed above which a commit at COMMIT_DIST leaves the re-check less than LATENCY_S + RECHECK_SLACK_S before the
+-- RECHECK_SAFE band on a 45 deg heading; math.huge without the re-check.
+function M.commitFastSpeed()
+  if M.RECHECK_S <= 0 then return math.huge end
+  return (M.RECHECK_SAFE - M.COMMIT_DIST) / (M.LATENCY_S + M.RECHECK_SLACK_S) * math.sqrt(2)
+end
+
+-- The Chebyshev distance past which a ready block is committed, at this velocity.
+function M.commitDistance(vx, vy)
+  vx, vy = vx or 0, vy or 0
+  if vx * vx + vy * vy > M.COMMIT_FAST_V * M.COMMIT_FAST_V then return M.COMMIT_DIST_FAST end
+  return M.COMMIT_DIST
 end
 
 -- (lookahead s, reach m, prepare-test lead s) at this velocity: the fast mode above FAST_MODE_V.
@@ -203,7 +224,7 @@ function M.decide(px, py, vx, vy, cx, cy, pending, now, retryAt, gate, latency)
     local pd = M.cheb(px, py, pending.cx, pending.cy)
     -- past the commit distance a ready block is taken whenever it is better than the current one,
     -- even if it no longer keeps the full 600 m margin (late answer): the next request follows at once
-    if pending.ready and pd < d and d > M.COMMIT_DIST then
+    if pending.ready and pd < d and d > M.commitDistance(vx, vy) then
       -- 512² commit-time re-check (see the top): a block the player would soon need to replace is
       -- re-prepared instead, while there is time for that
       -- (the latency is at least LATENCY_S: the last measured one says little about the next request)
