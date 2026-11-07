@@ -307,4 +307,41 @@ T.check(not f.altitudeHold(true, 500, -50, 0), 'a 50 m/s descent from 500 m resu
 T.check(not f.altitudeHold(false, 400, -20, 0), 'a 20 m/s descent at 400 m does not start holding')
 T.check(f.altitudeHold(false, 1400, 0, 1000), 'heights above the ground ahead, not above z = 0')
 
+-- the hard commit distance follows the edge guard's warning distance (braking distance): a ready block held by the
+-- uncover gate is taken before the warning would show (the user's 116 mph Baltimore drive, 2026-11-01)
+lattice.configure(1024, 1.0)
+f.configure()
+local eg = require('beamngEarth/edgeguard')
+T.check(f.hardCommitDist(0, 0) == f.HARD_COMMIT_DIST, 'at rest: the fixed hard commit distance')
+local v116 = 52
+local want = (f.HALF - f.SQUARE_SIZE) - eg.warnDistance(v116) - f.COMMIT_MARGIN
+T.check(math.abs(f.hardCommitDist(v116, 0) - want) < 1e-9 and want < f.HARD_COMMIT_DIST and want > f.COMMIT_DIST,
+  '116 mph: before the warning distance (' .. string.format('%.0f', want) .. ' m)')
+local want200 = (f.HALF - f.SQUARE_SIZE) - f.warnCap() - f.COMMIT_MARGIN
+T.check(math.abs(f.hardCommitDist(90, 0) - want200) < 1e-9 and want200 >= f.COMMIT_DIST,
+  '200 mph: before the healthy warning cap, never nearer than the commit distance (' .. string.format('%.0f', want200) .. ' m)')
+T.check(f.warnCap() == f.HALF - f.SQUARE_SIZE - f.COMMIT_DIST - f.WARN_LATE_M and f.warnCap() > eg.WARN_M,
+  'the warning cap: WARN_LATE_M past the commit distance')
+local closed = function() return false end
+T.check(f.decide(want + 1, 0, v116, 0, 0, 0, { cx = 384, cy = 0, ready = true }, 0, 0, closed, 0.3) == 'commit',
+  'a gate-held ready block: committed past the speed\'s hard commit distance')
+T.check(f.decide(want - 1, 0, v116, 0, 0, 0, { cx = 384, cy = 0, ready = true }, 0, 0, closed, 0.3) == nil,
+  '... and still held before it')
+-- a block taken from the server's ready set (preferReady) is never re-checked away for not being the target: the
+-- re-check dropped it and the next frame took it again, every 0.1-0.3 s, never committed (Midtown, 200 mph, 2026-11-02)
+lattice.configure(512, 2.0)
+f.configure()
+do
+  local vx37, vy37 = 134 * math.cos(math.rad(37)), 134 * math.sin(math.rad(37))
+  local pend = { cx = 4480, cy = 3456, ready = true }
+  T.check(f.decide(4671.3, 3520.1, vx37, vy37, 4480, 3328, pend, 0, 0, nil, 0.3) == 'discard', 'a target: re-checked')
+  pend.preferred = true
+  T.check(f.decide(4671.3, 3520.1, vx37, vy37, 4480, 3328, pend, 0, 0, nil, 0.3) == 'commit',
+    'the same block taken from the ready set: committed')
+  f.setReady({ { 384, 128 } })
+  local a, tx, ty, preferred = f.decide(200, 0, 40, 0, 0, 0, nil, 0, 0)
+  T.check(a == 'prepare' and tx == 384 and ty == 128 and preferred == true, 'prepare marks a ready block as preferred: '
+    .. tostring(a) .. ' ' .. tostring(tx) .. ' ' .. tostring(preferred))
+  f.setReady({})
+end
 T.done('test_follow')
